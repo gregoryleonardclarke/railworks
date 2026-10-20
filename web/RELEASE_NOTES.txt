@@ -1,0 +1,12 @@
+RAILWORKS Alpha 0.4
+Published from the GitHub main branch via itch.io Butler.
+
+Controls:
+- Right mouse drag: orbit and tilt the camera
+- Middle drag or Shift+right drag: pan the camera
+- Q/E: smooth rotation
+- Wheel: zoom
+
+This build features continuous, rounded rail geometry and smooth turnout bends.
+
+Re-publish requested 2026-10-20.
