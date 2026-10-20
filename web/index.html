@@ -9,10 +9,15 @@
 <body>
 <div id="app">
 <canvas id="glcanvas"></canvas><canvas id="hudcanvas"></canvas><div id="labels"></div>
-<div id="topbar"><div class="brand"><div class="mark">🚂</div><div><div class="brand-title">RAILWORKS</div><div class="brand-sub">RAILWAY LOGISTICS · ALPHA 0.4</div></div></div><div id="worldstats"><span class="pill"><span class="live"></span>SIMULATION LIVE</span><span class="pill">TRACK <strong id="trackcount">0</strong></span><span class="pill">TRAINS <strong id="traincount">1</strong></span><span class="pill">SIGNALS <strong id="signalcount">0</strong> · BLOCKS <strong id="blockcount">0</strong></span><span class="pill">£<strong id="credits">1200</strong> · <span id="deliveries">0</span> DELIVERED</span></div></div>
+<div id="topbar"><div class="brand"><div class="mark">🚂</div><div><div class="brand-title">RAILWORKS</div><div class="brand-sub">RAILWAY LOGISTICS · ALPHA 0.5</div></div></div><div id="worldstats"><span class="pill"><span class="live"></span>SIMULATION LIVE</span><span class="pill">TRACK <strong id="trackcount">0</strong></span><span class="pill">TRAINS <strong id="traincount">0</strong></span><span class="pill">SIGNALS <strong id="signalcount">0</strong> · BLOCKS <strong id="blockcount">0</strong></span><span class="pill">£<strong id="credits">5000</strong> · <span id="deliveries">0</span> DELIVERED</span></div></div>
 <div id="sidebar">
-<div class="sectionlabel">BUILD YOUR RAILWAY</div>
-<button class="tool active" data-mode="rail"><span class="tool-icon">🛤</span> Rail planner <small>R</small></button>
+<div class="sectionlabel">BUILD INDUSTRIES &amp; NETWORK</div>
+<button class="tool active" data-mode="timber"><span class="tool-icon">🌲</span> Logging camp <small>1</small></button>
+<button class="tool" data-mode="iron"><span class="tool-icon">⛏</span> Ore mine <small>2</small></button>
+<button class="tool" data-mode="depot"><span class="tool-icon">🏭</span> Machine works <small>3</small></button>
+<button class="tool" data-mode="freight"><span class="tool-icon">📦</span> Distribution hub <small>4</small></button>
+<hr><div class="sectionlabel">RAILWAY</div>
+<button class="tool" data-mode="rail"><span class="tool-icon">🛤</span> Rail planner <small>R</small></button>
 <button class="tool" data-mode="junction"><span class="tool-icon">⇆</span> Throw points <small>J</small></button>
 <button class="tool" data-mode="block"><span class="tool-icon">🚦</span> Block signal <small>B</small></button>
 <button class="tool" data-mode="chain"><span class="tool-icon">🔀</span> Chain signal <small>C</small></button>
@@ -21,17 +26,17 @@
 <button class="tool" data-mode="train"><span class="tool-icon">🚂</span> Add train <small>T</small></button>
 <button class="tool" data-mode="delete"><span class="tool-icon">⌫</span> Demolish <small>X</small></button>
 <hr>
-<div class="sectionlabel">HOW TO BUILD</div><p class="helper" id="toolhelp"><b>Factorio-style rail planner:</b> click a grid point or existing rail, move to preview a smooth alignment, then click to build. Branch from an existing rail to create turnouts. Press <kbd>Esc</kbd> to finish. Use <kbd>Ctrl+Z</kbd> to undo the last construction.</p>
-<hr><div class="sectionlabel">LIVE PRODUCTION</div><div id="industryContent"><div class="industry-note">Loading industry data...</div></div><hr><div class="sectionlabel">WORLD CONTROLS</div><p class="helper"><kbd>Right drag</kbd> smoothly orbit / tilt<br><kbd>Middle drag</kbd> or <kbd>Shift + right drag</kbd> pan<br><kbd>Wheel</kbd> zoom · hold <kbd>Q</kbd>/<kbd>E</kbd> rotate<br><kbd>W</kbd>/<kbd>A</kbd>/<kbd>D</kbd> or arrows to pan<br><kbd>G</kbd> grid · <kbd>H</kbd> blocks<br><kbd>Ctrl+Z</kbd> undo last track build<br><kbd>F</kbd> flip signal · <kbd>Space</kbd> pause</p>
+<div class="sectionlabel">HOW TO BUILD</div><p class="helper" id="toolhelp"><b>Build a railway from scratch!</b> Mines belong in coloured deposits. Press <kbd>R</kbd> to lay the first rail and select an existing track end to extend it. Aim to see a green preview, click to confirm. Press R again to rotate the starting piece. Right-click cancels.</p>
+<hr><div class="sectionlabel">LIVE PRODUCTION</div><div id="industryContent"><div class="industry-note">Loading industry data...</div></div><hr><div class="sectionlabel">WORLD CONTROLS</div><p class="helper"><kbd>Right drag</kbd> smoothly orbit / tilt<br><kbd>Middle drag</kbd> or <kbd>Shift + right drag</kbd> pan<br><kbd>Wheel</kbd> zoom · hold <kbd>Q</kbd>/<kbd>E</kbd> rotate<br><kbd>W</kbd>/<kbd>A</kbd>/<kbd>D</kbd> or arrows to pan<br><kbd>G</kbd> grid · <kbd>H</kbd> blocks<br><kbd>R</kbd> again to rotate the start<br><kbd>1/2/3/4</kbd> industry construction<br><kbd>Ctrl+Z</kbd> undo last track build<br><kbd>Right-click</kbd> cancel rails<br><kbd>F</kbd> flip signal · <kbd>Space</kbd> pause</p>
 <div class="utility"><button class="smallbtn" id="btnRotateLeft" title="Orbit camera left">⟲ Rotate</button><button class="smallbtn" id="btnRotateRight" title="Orbit camera right">⟳ Rotate</button></div><div class="utility"><button class="smallbtn" id="btnResetView">⌖ Reset camera</button><button class="smallbtn" id="btnHelp">? Help</button></div>
 <div class="utility"><button class="smallbtn highlight" id="btnSave">↓ Save</button><button class="smallbtn" id="btnReset">↺ Reset</button></div><div class="utility"><button class="smallbtn" id="btnExport">⇩ Export</button><button class="smallbtn" id="btnImport">⇧ Import</button><input id="importSave" type="file" accept=".json,application/json" hidden></div>
 </div>
 <div id="trainpanel"><div id="traincontent"></div></div>
-<div id="footer"><div id="hintbar"><span class="hinticon">✧</span><span id="hinttext">Lay smooth curves, turnouts and signal blocks. Deliver timber + steel to the depot, then machinery to distribution.</span></div><div id="minimapWrap"><canvas id="minimap" width="344" height="240"></canvas><div id="minicap"><span>NETWORK OVERVIEW</span><span>N ↑</span></div></div></div>
+<div id="footer"><div id="hintbar"><span class="hinticon">✧</span><span id="hinttext">NEW FRONTIER: No rails, trains or factories are pre-built. Place mines, works and a distributor, then connect them by railway.</span></div><div id="minimapWrap"><canvas id="minimap" width="344" height="240"></canvas><div id="minicap"><span>CLICK TO TRAVEL · FULL WORLD</span><span>N ↑</span></div></div></div>
 <div id="notice"></div>
-<div id="help"><div class="helpcard"><h2>Railworks · Railway Logistics</h2><p>Design and operate a railway network. Factories produce automatically; your job is to keep the freight moving without creating bottlenecks.</p>
+<div id="help"><div class="helpcard"><h2>Railworks · Railway Logistics</h2><p>Design and operate a railway network. Start with no railway or buildings. Place mines at resources, factories on clear land and stations on rails near your buildings.</p>
 <div class="helpgrid"><section><h3>Build the network</h3><ul>
-<li><b>R:</b> Click your start point or existing rail node. Move the cursor to preview a rail alignment that accounts for approach direction. Click to place it, and click further destinations to extend. Branch off existing rails to build Y and T junctions.</li>
+<li><b>R:</b> Click open ground for the first rail or an existing rail connection to extend. Preview the green ghost alignment, then click to build and continue. Press R again to rotate the starting piece; Escape or right-click cancels.</li>
 <li><b>Rail geometry:</b> Continuous extruded steel rails and ballast form smoothly rounded 45° bends and curved turnout transitions. Sleepers follow true arc length. Train wheels follow the rendered curves; sharp 90° turns are not accepted.</li><li><b>Camera:</b> Hold right mouse and drag horizontally to orbit freely, vertically to change the viewing angle. Middle-drag or Shift+right-drag to pan, scroll to zoom, hold Q/E for continuous rotation, or use the rotation buttons in the sidebar.</li>
 <li><b>Ctrl+Z:</b> Undo only the newly built segments from your most recent construction. Use Esc to finish drawing.</li>
 <li><b>J:</b> Click a point with three or more connections to cycle its manual preferred exit. Trains route through points automatically, unless you enable “Obey manual switch points” on the selected locomotive.</li>
@@ -39,12 +44,12 @@
 <li><b>C:</b> Click a rail to install a <b>chain signal</b>. Tries to reserve the full path through a junction to a clear exit.</li>
 <li><b>F:</b> Reverse the facing direction of the signal you are placing. Each click cycles placement and removal. <b>H:</b> Colour the occupancy blocks.</li></ul></section>
 <section><h3>Keep industry supplied</h3><ul>
-<li><b>West Timber Mill</b> makes timber automatically.</li><li><b>Ironworks</b> makes steel automatically.</li>
-<li><b>Central Depot</b> consumes two timber + one steel to manufacture machinery.</li>
-<li><b>North Distribution</b> buys machinery. Deliveries earn money.</li>
+<li><b>Logging camp:</b> build inside the green forest zone to produce timber.</li><li><b>Ore mine:</b> build inside grey-blue ore deposits to produce steel.</li>
+<li><b>Machine works:</b> build on clear ground; needs two timber and one steel delivered by rail for machinery.</li>
+<li><b>Distribution hub:</b> build anywhere on clear ground to receive machinery deliveries.</li>
 <li>Choose a train's <b>freight order</b>, then send it to a source and to its consumer. Wagons load/unload at scheduled stops.</li>
-<li><b>S:</b> Add station, <b>T:</b> add locomotive, <b>X:</b> demolish track or signal.</li></ul></section></div>
-<p><b>Current limitations:</b> track-construction points still snap to an eight-direction grid, curve radius and 22.5° rail variants are simplified rather than matching Factorio's complete 2.0 rail planner; single-track occupancy; full two-way paired signalling, sophisticated deadlock recovery, configurable factory recipes and rail construction costs remain in development. Save is manual; use Export/Import to transfer a railway between browser installations or itch.io uploads.</p>
+<li><b>1–4:</b> Place manual industry sites. <b>S:</b> Place a station on rail near a facility. <b>T:</b> Place a locomotive. <b>X:</b> Demolish.</li></ul></section></div>
+<p><b>Current limitations:</b> this is a Factorio-inspired eight-direction rail planner, NOT yet a complete implementation of its 22.5° pieces, obstruction avoidance and interlocking;  full two-way paired signalling, sophisticated deadlock recovery, configurable factory recipes and rail construction costs remain in development. Save is manual; use Export/Import to transfer a railway between browser installations or itch.io uploads.</p>
 <button class="helpclose" id="btnCloseHelp">Back to railway</button></div></div>
 <div id="failure"><h2>3D graphics unavailable</h2><p>This browser could not start WebGL. Enable hardware acceleration or try a recent version of Chrome, Firefox or Edge.</p></div>
 </div>

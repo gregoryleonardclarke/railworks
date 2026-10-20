@@ -1,12 +1,5 @@
-RAILWORKS Alpha 0.4
-Published from the GitHub main branch via itch.io Butler.
+RAILWORKS Alpha 0.5 — New Frontier
 
-Controls:
-- Right mouse drag: orbit and tilt the camera
-- Middle drag or Shift+right drag: pan the camera
-- Q/E: smooth rotation
-- Wheel: zoom
+World 180 × 140 grid nodes, no prebuilt rails, trains or industry. Manually place mines in resource deposits and factories on clear land, stations beside track. Rail planner supports endpoint selection, preview and curved turnouts.
 
-This build features continuous, rounded rail geometry and smooth turnout bends.
-
-Re-publish requested 2026-10-20.
+The rail graph is still eight-direction (45-degree increments) and does not yet reproduce Factorio 2.0's full 22.5-degree library.

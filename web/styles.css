@@ -36,3 +36,5 @@ input[type=range]{accent-color:#ecb76b;width:100%;margin:9px 0 2px}.trainhint{co
 #sidebar{max-height:calc(100% - 190px)}
 @media(max-width:780px){.helpgrid{grid-template-columns:1fr}.brand-sub{letter-spacing:.04em}#worldstats .pill:nth-child(4){display:none}}
 
+
+#sidebar{max-height:calc(100% - 178px)}.tool{height:41px;margin-bottom:5px}.station-tag{max-width:170px;text-overflow:ellipsis;overflow:hidden}#minimap{cursor:crosshair}

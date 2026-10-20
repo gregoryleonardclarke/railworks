@@ -3,14 +3,14 @@ const $=s=>document.querySelector(s), $all=s=>[...document.querySelectorAll(s)];
 const canvas=$('#glcanvas'),overlay=$('#hudcanvas'),ctx=overlay.getContext('2d');
 const gl=canvas.getContext('webgl',{antialias:true,alpha:false,depth:true,stencil:false,preserveDrawingBuffer:false});
 if(!gl){$('#failure').style.display='block';return;}
-const WORLD_X=30,WORLD_Z=23,CELL=2.56,PORT=CELL*.39,STORAGE='railworks-3d-v3',OLD_STORAGE='railworks-3d-v2',FIRST_STORAGE='railworks-3d-v1';
+const WORLD_X=180,WORLD_Z=140,CELL=2.56,PORT=CELL*.39,STORAGE='railworks-3d-v5',OLD_STORAGE='railworks-3d-v3',FIRST_STORAGE='railworks-3d-v2';
 const K=(x,z)=>x+','+z, parseKey=k=>k.split(',').map(Number), world=k=>{let a=parseKey(k);return {x:a[0]*CELL,z:a[1]*CELL};};
 const mix=(a,b,t)=>a+(b-a)*t, clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),dist=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
 const edgeKey=(a,b)=>a<b?a+'|'+b:b+'|'+a;
 const C={ground:'#5c795c',grass:'#547856',sleep:'#684b39',bed:'#7c7464',rail:'#e1e0ce',railSide:'#787e79',shadow:'#3b5745',yellow:'#e9b75f'};
 const rgb=hex=>{let s=hex[0]==='#'?hex.slice(1):hex;return [parseInt(s.slice(0,2),16)/255,parseInt(s.slice(2,4),16)/255,parseInt(s.slice(4,6),16)/255]};
-let graph=new Map(),stations=[],trains=[],signals=[],points=new Map(),nextTrain=1,nextStation=1,nextSignal=1,selectedTrainId=null,mode='rail',anchor=null,hover=null,showGrid=true,showBlocks=false,signalReverse=false,paused=false,dirty=true,noticeExpiry=0,anchorFrom=null,previewNodes=null,previewKey='',lastBuild=[],blockByEdge=new Map(),blocks=[],bank=1200,delivered=0,industryClock=0;
-const camera={x:14.6*CELL,z:10.5*CELL,zoom:.94,yaw:-.77,elev:.94};
+let graph=new Map(),stations=[],industries=[],trains=[],signals=[],points=new Map(),nextTrain=1,nextStation=1,nextSignal=1,nextIndustry=1,selectedTrainId=null,mode='rail',anchor=null,hover=null,showGrid=true,showBlocks=false,signalReverse=false,paused=false,dirty=true,noticeExpiry=0,anchorFrom=null,previewNodes=null,previewKey='',lastBuild=[],blockByEdge=new Map(),blocks=[],bank=5000,delivered=0,industryClock=0,railHeading=0;
+const camera={x:90*CELL,z:70*CELL,zoom:.82,yaw:-.77,elev:.94};
 // Target orientation interpolates toward the drag/keyboard controls. Camera movement
 // remains screen-space consistent at every yaw and tilt.
 const viewTarget={yaw:camera.yaw,elev:camera.elev};
@@ -33,54 +33,72 @@ function curveAt(a,node,b,t){let center=world(node),start=port(node,a),end=port(
  return{x:u*u*u*start.x+3*u*u*t*c1.x+3*u*t*t*c2.x+t*t*t*end.x,z:u*u*u*start.z+3*u*u*t*c1.z+3*u*t*t*c2.z+t*t*t*end.z}}
 function curveLength(a,n,b){let len=0,prev=curveAt(a,n,b,0);for(let i=1;i<=28;i++){let q=curveAt(a,n,b,i/28);len+=dist(prev,q);prev=q}return len}
 const DIRS=[[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
-function planRail(a,b,prev=null){if(!keyValid(a)||!keyValid(b)||a===b)return null;
- // A* over positions AND approach headings, so route transitions are genuinely rail-compatible.
- // A bend takes more than a single click: planning produces gradual 45° transitions.
- let open=[{n:a,from:prev,g:0,score:dist(world(a),world(b))}],seen=new Map(),links=new Map(),endKey=null;
- const state=(node,from)=>node+'@'+(from||'none');seen.set(state(a,prev),0);
- for(let iter=0;open.length&&iter<12500;iter++){let ind=0;for(let i=1;i<open.length;i++)if(open[i].score<open[ind].score)ind=i;
-  let cur=open.splice(ind,1)[0],id=state(cur.n,cur.from);if(cur.g>(seen.get(id)??Infinity)+.0001)continue;
-  if(cur.n===b){endKey=id;break}
-  for(let [dx,dz] of DIRS){let [x,z]=parseKey(cur.n),next=K(x+dx,z+dz);if(!keyValid(next)||!bendAllowed(cur.from,cur.n,next))continue;
-   let existing=graph.get(cur.n)?.has(next);let turn=cur.from?Math.max(0,1-((world(cur.n).x-world(cur.from).x)*dx+(world(cur.n).z-world(cur.from).z)*dz)/(dist(world(cur.n),world(cur.from))*Math.hypot(dx,dz))):0;
-   let cost=Math.hypot(dx,dz)*CELL+(turn*.72)+(existing?-.37:0);
-   // Turning back and forth produces unrealistic zigzags; prefer broad, continuous arcs.
-   let fresh=cur.g+cost,key=state(next,cur.n);if(fresh>=(seen.get(key)??Infinity)-.001)continue;
-   seen.set(key,fresh);links.set(key,id);open.push({n:next,from:cur.n,g:fresh,score:fresh+dist(world(next),world(b))});
+function planRail(a,b,prev=null){
+ if(!keyValid(a)||!keyValid(b)||a===b)return null;
+ const [ax,az]=parseKey(a),[bx,bz]=parseKey(b),margin=12;
+ const minX=Math.max(0,Math.min(ax,bx)-margin),maxX=Math.min(WORLD_X-1,Math.max(ax,bx)+margin);
+ const minZ=Math.max(0,Math.min(az,bz)-margin),maxZ=Math.min(WORLD_Z-1,Math.max(az,bz)+margin);
+ const heuristic=n=>dist(world(n),world(b));
+ const state=(n,dir,cool)=>n+'@'+dir+'@'+cool,heap=[];
+ function push(v){let i=heap.length;heap.push(v);while(i>0){let p=(i-1)>>1;if(heap[p].f<=v.f)break;heap[i]=heap[p];i=p}heap[i]=v}
+ function pop(){let top=heap[0],tail=heap.pop();if(heap.length){let i=0;while(i*2+1<heap.length){let l=i*2+1,r=l+1,j=r<heap.length&&heap[r].f<heap[l].f?r:l;if(heap[j].f>=tail.f)break;heap[i]=heap[j];i=j}heap[i]=tail}return top}
+ let startDir=-1;if(prev){let p=parseKey(prev);startDir=DIRS.findIndex(([dx,dz])=>dx===ax-p[0]&&dz===az-p[1])}
+ const origin=state(a,startDir,0),seen=new Map([[origin,0]]),links=new Map();
+ push({n:a,dir:startDir,cool:0,g:0,f:heuristic(a)*1.18,key:origin});
+ let result=null;
+ for(let steps=0;heap.length&&steps<120000;steps++){
+  const cur=pop();if(cur.g>(seen.get(cur.key)??Infinity)+.001)continue;
+  if(cur.n===b){result=cur.key;break}
+  let [x,z]=parseKey(cur.n);
+  for(let dir=0;dir<DIRS.length;dir++){
+   let [dx,dz]=DIRS[dir],nx=x+dx,nz=z+dz;
+   if(nx<minX||nx>maxX||nz<minZ||nz>maxZ)continue;
+   let delta=cur.dir<0?0:Math.min((dir-cur.dir+8)%8,(cur.dir-dir+8)%8);
+   if(delta>1||(delta===1&&cur.cool>0))continue;
+   let cool=delta?2:Math.max(0,cur.cool-1),next=K(nx,nz);
+   let existing=graph.get(cur.n)?.has(next),g=cur.g+Math.hypot(dx,dz)*CELL+(delta?CELL*1.05:0)-(existing?.17:0),key=state(next,dir,cool);
+   if(g>=(seen.get(key)??Infinity)-.001)continue;
+   seen.set(key,g);links.set(key,cur.key);push({n:next,dir,cool,g,key,f:g+heuristic(next)*1.18});
   }
  }
- if(!endKey)return null;let route=[];for(let k=endKey;k;k=links.get(k))route.unshift(k.split('@')[0]);return route;
+ if(!result)return null;
+ const path=[];for(let k=result;k;k=links.get(k))path.unshift(k.split('@')[0]);
+ return path;
 }
-function layPlanned(a,b,incoming=null){let route=planRail(a,b,incoming);if(!route||route.length<2)return{added:0,route:null};let added=0;
+function routeCanBuild(path){return !!(path&&path.length>=2&&!path.some(n=>industries.some(s=>dist(world(n),world(s.node))<3.7)))}
+function layPlanned(a,b,incoming=null){let route=planRail(a,b,incoming);if(!routeCanBuild(route))return{added:0,route:null};let added=0;
  let created=[];for(let i=1;i<route.length;i++)if(link(route[i-1],route[i])){added++;created.push([route[i-1],route[i]])}
  if(added){lastBuild=created;recomputeBlocks()}
  return{added,route};}
 function addLine(a,b){return layPlanned(a,b).added}
 function ensureRoute(nodes){for(let i=1;i<nodes.length;i++)link(K(...nodes[i-1]),K(...nodes[i]))}
 function stationById(id){return stations.find(s=>s.id===id)}
-function demo(){graph=new Map();stations=[];trains=[];signals=[];points=new Map();nextTrain=1;nextStation=1;nextSignal=1;bank=1200;delivered=0;industryClock=0;
-let outline=[];for(let x=7;x<=23;x++)outline.push([x,4]);outline.push([24,5],[25,6]);for(let z=7;z<=15;z++)outline.push([25,z]);outline.push([24,16],[23,17]);for(let x=22;x>=7;x--)outline.push([x,17]);outline.push([6,16],[5,15]);for(let z=14;z>=7;z--)outline.push([5,z]);outline.push([6,6],[6,5],[7,4]);ensureRoute(outline);
-let mid=[];for(let z=4;z<=17;z++)mid.push([13,z]);ensureRoute(mid);
-ensureRoute([[5,11],[4,11],[3,11],[2,11]]);ensureRoute([[25,11],[26,11],[27,11]]);
-ensureRoute([[13,9],[14,9],[15,9],[16,9],[17,9],[18,9],[19,9],[20,9],[21,9],[22,9],[23,9],[24,10],[25,11]]);
-addStation('West Timber Mill',K(5,10),'timber',false);
-addStation('Ironworks',K(25,12),'iron',false);
-addStation('Central Depot',K(9,17),'depot',false);
-addStation('North Distribution',K(13,4),'freight',false);
-const t=createTrain(K(10,17),K(9,17),true);t.past=[K(11,17),K(12,17),K(13,17),K(14,17)];t.schedule=[stations.find(s=>s.kind==='timber').id,stations.find(s=>s.kind==='depot').id];t.stopIndex=0;t.target=t.schedule[0];t.speedCap=4.8;selectedTrainId=t.id;
-// Preinstalled example signals for the two-way demonstration network.
-for(let [a,b,type] of [
- [K(13,6),K(13,5),'rail'],[K(13,16),K(13,15),'rail'],
- [K(5,9),K(5,10),'rail'],[K(25,13),K(25,12),'rail'],
- [K(13,9),K(14,9),'chain'],[K(14,9),K(15,9),'rail'],
- [K(13,17),K(13,16),'chain'],[K(13,4),K(13,5),'chain'],
- [K(13,11),K(13,10),'rail'],[K(25,11),K(25,12),'chain'],
- [K(9,17),K(10,17),'rail'],[K(22,17),K(23,17),'rail'],
- [K(5,15),K(5,14),'rail'],[K(25,8),K(25,9),'rail'],
- ])if(graph.get(a)?.has(b))signals.push({id:nextSignal++,a,b,type});
-recomputeBlocks();
-anchor=null;anchorFrom=null;dirty=true;setMode('select',true);updateUI();updateIndustryUI();announce('Starter railway loaded — Pioneer 01 is on the line.');}
-function addStation(name,node,kind='depot',doDirty=true){let s={id:'s'+nextStation++,name,node,kind,stock:{timber:kind==='timber'?18:0,steel:kind==='iron'?12:0,machinery:0},received:{timber:0,steel:0,machinery:0},production:0};stations.push(s);if(doDirty)dirty=true;return s}
+const DEPOSITS=[
+ {kind:'timber',x:61,z:54,r:10},{kind:'timber',x:44,z:83,r:12},{kind:'timber',x:130,z:102,r:13},
+ {kind:'timber',x:155,z:35,r:11},{kind:'timber',x:92,z:118,r:9},
+ {kind:'iron',x:112,z:53,r:9},{kind:'iron',x:71,z:104,r:8},{kind:'iron',x:148,z:75,r:9},
+ {kind:'iron',x:32,z:27,r:11},{kind:'iron',x:116,z:116,r:9}
+];
+function depositNear(node,kind){let p=world(node);return DEPOSITS.some(d=>d.kind===kind&&Math.hypot(p.x-d.x*CELL,p.z-d.z*CELL)<d.r*CELL)}
+function nearestSite(node){let p=world(node),best=null,d=Infinity;for(let site of industries){let n=dist(p,world(site.node));if(n<d&&n<=18){d=n;best=site}}return best}
+function addIndustry(kind,node){
+ if(!keyValid(node)||industries.some(s=>dist(world(s.node),world(node))<9))return null;
+ if((kind==='timber'||kind==='iron')&&!depositNear(node,kind))return null;
+ if(industries.length>=120)return null;
+ const names={timber:'Logging camp',iron:'Ore mine',depot:'Machine works',freight:'Distribution hub'};
+ let site={id:'i'+nextIndustry++,kind,node,name:names[kind]+' '+String(nextIndustry-1).padStart(2,'0'),stock:{timber:0,steel:0,machinery:0},received:{timber:0,steel:0,machinery:0},production:0};
+ industries.push(site);dirty=true;updateIndustryUI();return site;
+}
+function emptyWorld(){
+ graph=new Map();stations=[];industries=[];trains=[];signals=[];points=new Map();
+ nextTrain=nextStation=nextSignal=nextIndustry=1;bank=5000;delivered=0;industryClock=0;selectedTrainId=null;
+ anchor=null;anchorFrom=null;previewNodes=null;lastBuild=[];dirty=true;
+ camera.x=90*CELL;camera.z=70*CELL;camera.zoom=.82;
+ recomputeBlocks();setMode('timber',true);updateUI();updateIndustryUI();
+ announce('New frontier: build logging camps in green forest zones and ore mines in grey-blue ore deposits. Nothing is prebuilt.');
+}
+function demo(){emptyWorld()}
+function addStation(name,node,kind='freight',doDirty=true){let site=nearestSite(node);kind=site?.kind||kind;let s={id:'s'+nextStation++,name:site?site.name+' Station':name,node,kind,siteId:site?.id||null,stock:{timber:0,steel:0,machinery:0},received:{timber:0,steel:0,machinery:0},production:0};stations.push(s);if(doDirty)dirty=true;return s}
 function ensureIndustry(s){if(!s.stock)s.stock={timber:0,steel:0,machinery:0};if(!s.received)s.received={timber:0,steel:0,machinery:0};if(s.production===undefined)s.production=0}
 const GOODS={timber:{label:'Timber',icon:'🌲',color:'#bf8d5b'},steel:{label:'Steel',icon:'⚙',color:'#aeb8c1'},machinery:{label:'Machinery',icon:'📦',color:'#efc06e'}};
 function takeGoods(s,good,count){let n=Math.min(count,Math.floor(s.stock[good]||0));s.stock[good]-=n;return n}
@@ -89,14 +107,44 @@ function cargoStop(t,st){ensureIndustry(st);let good=t.freightType||'timber',cap
 if((t.load||0)>0&&accepts(st,t.loadGood||good)){let oldGood=t.loadGood||good;let unload=t.load;t.load=0;st.received[oldGood]=(st.received[oldGood]||0)+unload;t.cargo='EMPTY';if(st.kind==='freight'){delivered+=unload;bank+=unload*26;announce(`${t.name} delivered ${unload} machinery · +£${unload*26}`)}else announce(`${t.name} delivered ${unload} ${GOODS[oldGood].label} to ${st.name}`)}
 if(st.stock[good]>0&&t.load===0&&cap>0){let quantity=takeGoods(st,good,cap);if(quantity){t.load=quantity;t.loadGood=good;t.cargo=good.toUpperCase();announce(`${t.name} loaded ${quantity} ${GOODS[good].label} at ${st.name}`)}}
 }
-function tickIndustry(dt){industryClock+=dt;for(let s of stations){ensureIndustry(s);if(s.kind==='timber')s.stock.timber=Math.min(150,s.stock.timber+dt*.73);if(s.kind==='iron')s.stock.steel=Math.min(150,s.stock.steel+dt*.52);
-if(s.kind==='depot'){s.production+=dt;while(s.production>=2.8&&s.received.timber>=2&&s.received.steel>=1){s.production-=2.8;s.received.timber-=2;s.received.steel-=1;s.stock.machinery=Math.min(150,s.stock.machinery+1)}s.production=Math.min(s.production,2.8)} }
-if(industryClock>0.7){industryClock=0;updateIndustryUI()}}
-function updateIndustryUI(){let el=$('#industryContent');if(!el)return;let timber=stations.find(x=>x.kind==='timber'),iron=stations.find(x=>x.kind==='iron'),depot=stations.find(x=>x.kind==='depot'),freight=stations.find(x=>x.kind==='freight');
-let st=(s,group)=>s?`${Math.floor((group==='stock'?s.stock:s.received)[s.kind==='depot'?'machinery':s.kind==='freight'?'machinery':s.kind==='iron'?'steel':'timber']||0)}`:'—';
-el.innerHTML=`<div class="industry-chain"><span>🌲 Timber <b>${timber?Math.floor(timber.stock.timber):'—'}</b></span><span>⚙ Steel <b>${iron?Math.floor(iron.stock.steel):'—'}</b></span><span>🏭 Machinery <b>${depot?Math.floor(depot.stock.machinery):'—'}</b></span></div><p class="industry-note">Depot inputs: <b>${depot?Math.floor(depot.received.timber):0}</b> timber + <b>${depot?Math.floor(depot.received.steel):0}</b> steel. Deliver machinery to North Distribution.</p>`;
-$('#credits').textContent=Math.floor(bank);$('#deliveries').textContent=delivered}
-
+function tickIndustry(dt){
+ industryClock+=dt;
+ for(let s of stations){let site=nearestSite(s.node);if(site){s.siteId=site.id;s.kind=site.kind;s.name=site.name+' Station'}else{s.siteId=null;s.kind='unassigned'}}
+ for(let site of industries){ensureIndustry(site);
+  if(site.kind==='timber')site.stock.timber=Math.min(260,site.stock.timber+dt*.7);
+  if(site.kind==='iron')site.stock.steel=Math.min(260,site.stock.steel+dt*.55);
+  if(site.kind==='depot'){
+   site.production+=dt;
+   while(site.production>=2.8&&site.received.timber>=2&&site.received.steel>=1&&site.stock.machinery<260){
+    site.production-=2.8;site.received.timber-=2;site.received.steel-=1;site.stock.machinery+=1;
+   }
+   site.production=Math.min(site.production,2.8);
+  }
+  const links=stations.filter(s=>s.siteId===site.id);
+  for(const stop of links){ensureIndustry(stop);
+   for(const item of ['timber','steel','machinery']){
+    if(site.stock[item]>0&&stop.stock[item]<140){let n=Math.min(site.stock[item],140-stop.stock[item],dt*6);site.stock[item]-=n;stop.stock[item]+=n}
+    if(stop.received[item]>0&&['depot','freight'].includes(site.kind)){
+     const n=stop.received[item];site.received[item]+=n;stop.received[item]=0;
+    }
+   }
+  }
+ }
+ if(industryClock>.7){industryClock=0;updateIndustryUI()}
+}
+function updateIndustryUI(){
+ const el=$('#industryContent');if(!el)return;
+ const count=kind=>industries.filter(s=>s.kind===kind).length;
+ const stock=(kind,item)=>Math.floor(industries.filter(s=>s.kind===kind).reduce((n,s)=>n+(s.stock[item]||0),0));
+ const input=item=>Math.floor(industries.filter(s=>s.kind==='depot').reduce((n,s)=>n+(s.received[item]||0),0));
+ el.innerHTML='<div class="industry-chain">'+
+ '<span>🌲 Logging camps <b>'+count('timber')+' · '+stock('timber','timber')+' logs</b></span>'+
+ '<span>⛏ Ore mines <b>'+count('iron')+' · '+stock('iron','steel')+' ore</b></span>'+
+ '<span>🏭 Machine works <b>'+count('depot')+' · '+stock('depot','machinery')+' machines</b></span>'+
+ '<span>📦 Distribution hubs <b>'+count('freight')+'</b></span></div>'+
+ '<p class="industry-note">Factory inputs: '+input('timber')+' timber + '+input('steel')+' steel. Build a station on nearby track to connect each facility.</p>';
+ $('#credits').textContent=Math.floor(bank);$('#deliveries').textContent=delivered;
+}
 function createTrain(from,to,starter=false){if(!graph.get(from)?.has(to))return null;let t={id:nextTrain++,name:starter?'Pioneer 01':`Locomotive ${String(nextTrain-1).padStart(2,'0')}`,from,to,progress:0,past:[],cars:starter?2:1,speed:0,speedCap:starter?4.8:4.1,halted:false,auto:true,dwell:0,status:'Running',schedule:stations.map(s=>s.id),stopIndex:0,target:stations[0]?.id||null,cargo:'EMPTY',load:0,loadGood:'timber',freightType:'timber',manualPoints:false,color:starter?'#cc5949':(['#4f99a4','#d99f48','#a56b82'][nextTrain%3]),distanceTotal:0};trains.push(t);selectedTrainId=t.id;dirty=true;return t}
 function seedPast(from,to){let past=[],prev=to,at=from;for(let i=0;i<7;i++){let opts=neighbors(at).filter(k=>k!==prev&&!past.includes(k));if(!opts.length)break;let p=world(prev),h=world(at),wx=h.x-p.x,wz=h.z-p.z;opts.sort((a,b)=>{let aa=world(a),bb=world(b);return ((bb.x-h.x)*wx+(bb.z-h.z)*wz)-((aa.x-h.x)*wx+(aa.z-h.z)*wz)});let next=opts[0];past.push(next);prev=at;at=next}return past}
 // Signal cut points partition the physical network into occupancy blocks.
@@ -279,30 +327,48 @@ function junctionMesh(m,n){let nn=neighbors(n),p=world(n),distinct=new Set();
 }
 function hash(x){let s=Math.sin(x*18.263+4.928)*54831.82;return s-Math.floor(s)}
 function hasRailNear(x,z){let p={x,z};let e=closestEdge(p);return e&&e.d<2.7}
-function buildFactory(m,s){let p=world(s.node),kind=s.kind,atX=kind==='timber'?-5.15:kind==='iron'?4.8:kind==='depot'?0:0,atZ=kind==='depot'?5.35:kind==='freight'?-5.4:kind==='timber'?-2:kind==='iron'?3.5:0;
-let x=clamp(p.x+atX,2,72),z=clamp(p.z+atZ,2,54);m.box(x,.10,z,7,.18,6.0,0,'#8b8c78');m.box(x-.1,.86,z,5.8,1.5,4.9,0,kind==='iron'?'#7b7772':kind==='timber'?'#9a7955':kind==='depot'?'#b7ad8f':'#789294');m.box(x-.1,1.72,z,6.5,.25,5.3,0,kind==='iron'?'#666e78':kind==='timber'?'#5f5f52':kind==='depot'?'#59676c':'#667e8c');
-for(let i=-1;i<=1;i++){m.box(x+i*1.65,1.06,z+2.52,1.0,.72,.075,0,'#a6d6d9')}
-if(kind==='iron'){m.cylinder(x-1.6,3.1,z-1.1,.6,4.9,'#686b6c',12);m.cylinder(x+1.9,2.4,z-1.6,.42,3.4,'#89857d',12);m.cylinder(x-1.6,5.62,z-1.1,.7,.32,'#d6b987',12)}
-if(kind==='timber'){for(let i=0;i<7;i++){let xx=x-2.8+i*.88;m.box(xx,.47,z+3.3,.28,.36,2.0,0,'#98734a')}}
-if(kind==='depot'){m.box(x+2.0,.25,z-3.0,3,.30,1.4,0,'#d0b879');m.box(x+2.5,1.1,z-3.0,1.0,1.45,1.2,0,'#7a9897')}
-// Platform right alongside the track, pitched uniformly to track heading.
-let ns=neighbors(s.node),v=ns.length?world(ns[0]):{x:p.x+2,z:p.z},ang=Math.atan2(v.x-p.x,v.z-p.z),side=kind==='depot'?-1:1,px=p.x+Math.cos(ang)*side*1.35,pz=p.z-Math.sin(ang)*side*1.35;
-m.box(px,.22,pz,1.35,.38,4.2,ang,'#bbb6a2');m.box(px,.42,pz,1.35,.055,4.2,ang,'#e3c778');m.box(px,.90,pz, .13,.88,.13,ang,'#f5dba2');m.box(px,1.38,pz,1.2,.20,.55,ang,'#30484b');
+function buildFactory(m,s){
+ let p=world(s.node),ns=neighbors(s.node),v=ns.length?world(ns[0]):{x:p.x+2,z:p.z},ang=Math.atan2(v.x-p.x,v.z-p.z),px=p.x+Math.cos(ang)*1.43,pz=p.z-Math.sin(ang)*1.43;
+ m.box(px,.20,pz,1.35,.32,4.55,ang,'#999687');m.box(px,.39,pz,1.32,.06,4.55,ang,'#e6c883');
+ m.box(px,1.04,pz,.12,1.10,.13,ang,'#c9d9d2');m.box(px,1.62,pz,1.28,.24,.18,ang,s.siteId?'#648f7f':'#825f59');
+}
+function buildIndustry(m,site){
+ let p=world(site.node),x=p.x,z=p.z,k=site.kind;
+ m.box(x,.09,z,7.3,.14,7.3,0,'#858a7d');
+ const color={timber:'#94745b',iron:'#788a8b',depot:'#bba578',freight:'#699494'}[k];
+ m.box(x,.97,z,6.1,1.7,5.8,0,color);m.box(x,1.93,z,6.65,.24,6.4,0,'#4e5960');
+ for(let i=-1;i<=1;i++)m.box(x+i*1.63,1.04,z+2.94,.95,.8,.07,0,'#c2dbd6');
+ if(k==='timber')for(let i=0;i<7;i++)m.box(x-3+i,.41,z+4.35,.33,.38,2.25,0,'#bc8e56');
+ if(k==='iron'){m.cylinder(x-1.65,3.05,z-1.4,.60,4.8,'#686a6a',12);m.cylinder(x+1.7,2.2,z-1.65,.36,3.1,'#565e65',10)}
+ if(k==='depot'){m.box(x+2.5,1.3,z-3.6,1.4,2.6,1.4,0,'#8b9e98');m.box(x-2.1,.45,z-3.65,2.2,.9,1.5,0,'#d4bd86')}
+ if(k==='freight')for(let i=0;i<4;i++)m.box(x-3+i*1.8,.7,z+4.5,1.4,1.25,1.2,0,i%2?'#b7ad8e':'#ae9e78');
 }
 let staticMesh=null,dynamicMesh=null,shader=null;
-function buildStatic(){let m=new Mesh();let w=(WORLD_X-1)*CELL,h=(WORLD_Z-1)*CELL;
-m.box(w/2,-.41,h/2,w+14,.8,h+14,0,'#354e40');m.box(w/2,-.038,h/2,w+1,.07,h+1,0,'#526f54');
-for(let x=0;x<WORLD_X-1;x++)for(let z=0;z<WORLD_Z-1;z++){let n=hash(x*24+z*79),shade=n<.15?'#587959':n<.4?'#587558':n<.76?'#5a7858':'#607d5d';m.flat((x+.5)*CELL,(z+.5)*CELL,CELL+.012,CELL+.012,shade,.002)}
-if(showGrid){for(let i=0;i<WORLD_X;i++)m.box(i*CELL,.015,h/2,.023,.014,h,0,'#73916c');for(let j=0;j<WORLD_Z;j++)m.box(w/2,.015,j*CELL,w,.014,.023,0,'#73916c')}
-// Unbuilt clusters of pine and deciduous trees, deliberately kept away from railways.
-for(let i=0;i<200;i++){let x=2+hash(i*16+31)*(w-4),z=2+hash(i*9+14)*(h-4);if(hasRailNear(x,z)||stations.some(s=>dist({x,z},world(s.node))<8))continue;let size=.70+hash(i*37+3)*.80;if(hash(i*41+5)<.54){m.cylinder(x,.65*size,z,.15*size,1.3*size,'#635744',6);m.cone(x,2*size,z,.95*size,2.65*size,i%3===0?'#315c41':'#406946',9);m.cone(x,2.7*size,z,.71*size,1.95*size,'#457a4e',9)}else{m.cylinder(x,.58*size,z,.18*size,1.1*size,'#604d3c',7);m.cone(x,1.64*size,z,1.08*size,2.05*size,i%3?'#648e52':'#739b56',10)}}
-for(let [a,set] of graph)for(let b of set)if(a<b)segmentMesh(m,a,b);
-for(let [node,set] of graph)if(set.size>=2)junctionMesh(m,node);
-
-for(let s of stations)buildFactory(m,s);
-// Border retaining wall and low-lying hillside ridges.
-for(let i=0;i<12;i++){let x=i*(w+10)/11-5;m.cone(x,1.3,h+7,3.2,3.3,i%2?'#486f51':'#567956',8)}
-return m}
+function buildStatic(){
+ let m=new Mesh(),w=(WORLD_X-1)*CELL,h=(WORLD_Z-1)*CELL;
+ m.box(w/2,-.45,h/2,w+CELL,.82,h+CELL,0,'#3c5846');m.box(w/2,-.025,h/2,w+CELL,.055,h+CELL,0,'#5e7e5b');
+ for(let x=0;x<WORLD_X-4;x+=7)for(let z=0;z<WORLD_Z-4;z+=7){let n=hash(x*24+z*79),shade=n<.2?'#5b7b57':n<.5?'#587754':n<.75?'#5d805b':'#638360';m.flat((x+3.5)*CELL,(z+3.5)*CELL,CELL*6.9,CELL*6.9,shade,.011)}
+ for(let d of DEPOSITS){let x=d.x*CELL,z=d.z*CELL;
+  m.flat(x,z,d.r*CELL*1.3,d.r*CELL*1.3,d.kind==='iron'?'#60766d':'#467751',.019);
+  for(let i=0;i<26;i++){
+   let a=i*2.39996+hash(i+d.x)*.7,r=(.25+.65*hash(i*11+d.z))*d.r*CELL,px=x+Math.cos(a)*r,pz=z+Math.sin(a)*r;
+   if(industries.some(s=>dist({x:px,z:pz},world(s.node))<6))continue;
+   if(d.kind==='iron')m.cone(px,.42,pz,.65+hash(i)*.43,.9+hash(i*3)*.6,i%3?'#768d8d':'#93a69d',7);
+   else{let scale=.72+hash(i*37+d.x)*.55;m.cylinder(px,.72*scale,pz,.17*scale,1.35*scale,'#554e3d',6);m.cone(px,2*scale,pz,.95*scale,2.5*scale,i%3?'#366746':'#4c8151',7)}
+  }
+ }
+ for(let i=0;i<340;i++){
+  let x=4+hash(i*31+11)*(w-8),z=4+hash(i*17+3)*(h-8);
+  if(DEPOSITS.some(d=>dist({x,z},{x:d.x*CELL,z:d.z*CELL})<d.r*CELL*.9))continue;
+  if(industries.some(s=>dist({x,z},world(s.node))<7)||hasRailNear(x,z))continue;
+  let scale=.5+hash(i*53+7)*.7;m.cylinder(x,.60*scale,z,.16*scale,1.2*scale,'#625343',6);m.cone(x,1.85*scale,z,.88*scale,2.5*scale,'#47764a',7);
+ }
+ for(let [a,set] of graph)for(let b of set)if(a<b)segmentMesh(m,a,b);
+ for(let [node,set] of graph)if(set.size>=2)junctionMesh(m,node);
+ for(let s of stations)buildFactory(m,s);
+ for(let site of industries)buildIndustry(m,site);
+ return m;
+}
 function drawTrainMesh(m,t){let points=trainCars(t);let angle;let nose=head(t),tail=behind(t,.5);angle=Math.atan2(nose.x-tail.x,nose.z-tail.z);
 const at=(pos, ang, ox,oy,oz)=>({x:pos.x+ox*Math.cos(ang)+oz*Math.sin(ang),y:oy,z:pos.z-ox*Math.sin(ang)+oz*Math.cos(ang)});
 function boxAt(pos,ang,x,y,z,w,h,l,col){let p=at(pos,ang,x,y,z);m.box(p.x,p.y,p.z,w,h,l,ang,col)}
@@ -330,34 +396,99 @@ m.box(x,.65,z,.14,1.24,.14,0,'#303b41');m.box(x,1.35,z,.42,.58,.28,0,s.type==='c
 if(s.type==='chain')m.box(x,1.17,z+.17,.20,.10,.10,0,'#79bddb')
 }}
 function render3D(){if(dirty){staticMesh=upload(buildStatic(),staticMesh,gl.STATIC_DRAW);dirty=false;updateStats()};let m=new Mesh();drawSignalsMesh(m);for(let t of trains)drawTrainMesh(m,t);dynamicMesh=upload(m,dynamicMesh,gl.DYNAMIC_DRAW);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.useProgram(shader.program);gl.uniformMatrix4fv(shader.proj,false,projMat());gl.uniformMatrix4fv(shader.view,false,viewMat());draw(staticMesh);draw(dynamicMesh)}
-function labels(){let root=$('#labels');if(root.children.length!==stations.length){root.textContent='';for(let s of stations){let l=document.createElement('div');l.className='station-tag';l.textContent=s.name;l.dataset.station=s.id;root.appendChild(l)}}for(let el of root.children){let s=stationById(el.dataset.station);if(!s)continue;let p=world(s.node),q=project(p.x,3.1,p.z);el.style.left=q.x+'px';el.style.top=q.y+'px';el.style.display=q.x<0||q.x>viewport.w||q.y<0||q.y>viewport.h?'none':'block'}}
+function labels(){
+ const root=$('#labels'),list=[...stations.map(s=>({...s,label:s.name})),...industries.map(s=>({...s,label:s.name}))];
+ const key=list.map(s=>s.id+':'+s.label).join('|');
+ if(root.dataset.key!==key){root.dataset.key=key;root.textContent='';for(let s of list){let l=document.createElement('div');l.className='station-tag';l.textContent=s.label;l.dataset.id=s.id;root.appendChild(l)}}
+ for(let el of root.children){let s=list.find(s=>s.id===el.dataset.id);if(!s)continue;let p=world(s.node),q=project(p.x,s.id[0]==='i'?3.45:1.8,p.z);el.style.left=q.x+'px';el.style.top=q.y+'px';el.style.display=q.x<-20||q.x>viewport.w+20||q.y<-20||q.y>viewport.h+20?'none':'block'}
+}
+function drawGhostPath(nodes){
+ if(!nodes||nodes.length<2)return;
+ ctx.save();ctx.beginPath();let start=world(nodes[0]),q=project(start.x,.62,start.z);ctx.moveTo(q.x,q.y);
+ for(let i=0;i<nodes.length-1;i++){
+  let a=nodes[i],b=nodes[i+1],p1=port(a,b),p2=port(b,a),s=project(p1.x,.62,p1.z),t=project(p2.x,.62,p2.z);
+  ctx.lineTo(s.x,s.y);ctx.lineTo(t.x,t.y);
+  if(i<nodes.length-2){for(let k=1;k<=9;k++){let w=curveAt(a,b,nodes[i+2],k/9),v=project(w.x,.62,w.z);ctx.lineTo(v.x,v.y)}}
+ }
+ ctx.strokeStyle='#b5edce';ctx.lineWidth=5;ctx.globalAlpha=.94;ctx.setLineDash([9,5]);ctx.stroke();ctx.restore();
+ let last=world(nodes.at(-1)),v=project(last.x,.68,last.z);ctx.fillStyle='#b5edce';ctx.beginPath();ctx.arc(v.x,v.y,6,0,Math.PI*2);ctx.fill();
+}
 function overlayDraw(){ctx.clearRect(0,0,viewport.w,viewport.h);
-if(mode==='rail'&&anchor&&hover&&hover!==anchor){let key=anchor+'>'+hover+'@'+anchorFrom;if(key!==previewKey){previewKey=key;previewNodes=planRail(anchor,hover,anchorFrom)}
- if(previewNodes&&previewNodes.length>=2){ctx.save();ctx.beginPath();previewNodes.forEach((node,i)=>{let p=world(node),q=project(p.x,.48,p.z);if(!i)ctx.moveTo(q.x,q.y);else ctx.lineTo(q.x,q.y)});ctx.strokeStyle='#fae1a1';ctx.lineWidth=5;ctx.globalAlpha=.80;ctx.setLineDash([12,6]);ctx.stroke();ctx.restore();}}
-if(hover&&mode!=='select'){let p=world(hover),q=project(p.x,.24,p.z);ctx.beginPath();ctx.arc(q.x,q.y,8,0,Math.PI*2);ctx.strokeStyle=mode==='delete'?'#ef917f':'#ffe09b';ctx.lineWidth=2;ctx.stroke();ctx.beginPath();ctx.arc(q.x,q.y,3.4,0,Math.PI*2);ctx.fillStyle='#ffe09b';ctx.fill()}
-if(mode==='rail'&&anchor){let A=world(anchor),B=hover?world(hover):A,a=project(A.x,.48,A.z),b=project(B.x,.48,B.z);ctx.save();ctx.setLineDash([9,6]);ctx.strokeStyle='#ffd484';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.restore();ctx.fillStyle='#eeb564';ctx.beginPath();ctx.arc(a.x,a.y,6,0,Math.PI*2);ctx.fill()}
-if(showBlocks){for(let block of blocks){ctx.save();ctx.strokeStyle=['#89d3ee','#eec981','#bd9def','#eab1b0','#a6db8b'][block.id%5];ctx.globalAlpha=.48;ctx.lineWidth=5;ctx.beginPath();for(let e of block.edges){let [a,b]=e.split('|'),A=world(a),B=world(b),u=project(A.x,.41,A.z),v=project(B.x,.41,B.z);ctx.moveTo(u.x,u.y);ctx.lineTo(v.x,v.y)}ctx.stroke();ctx.restore()}}
-if(['block','chain'].includes(mode)&&hover){let e=closestEdge(unproject(mouse.x,mouse.y));if(e&&e.d<1.25){let closest=dist(unproject(mouse.x,mouse.y),world(e.a))<=dist(unproject(mouse.x,mouse.y),world(e.b))?e.a:e.b,front=signalReverse?(closest===e.a?e.b:e.a):closest,back=front===e.a?e.b:e.a,u=world(front),v=world(back),q=project(mix(u.x,v.x,.27),1.3,mix(u.z,v.z,.27));ctx.fillStyle='#ffe7a4';ctx.font='bold 12px system-ui';ctx.fillText(signalReverse?'⇠ Signal direction flipped':'➜ Click to place signal',q.x-55,q.y-14)}}
-const selection=trains.find(t=>t.id===selectedTrainId);if(selection){let destination=stationById(selection.target);if(destination){let route=shortest(selection.to,destination.node);if(route&&route.length>1){ctx.save();ctx.beginPath();let start=head(selection),sp=project(start.x,.42,start.z);ctx.moveTo(sp.x,sp.y);for(let k of route){let p=world(k),s=project(p.x,.42,p.z);ctx.lineTo(s.x,s.y)}ctx.strokeStyle='#aaf0c2';ctx.lineWidth=2.5;ctx.setLineDash([7,8]);ctx.globalAlpha=.82;ctx.stroke();ctx.restore()}}}
-for(let t of trains){let p=head(t),q=project(p.x,2.65,p.z);if(t.id===selectedTrainId){ctx.lineWidth=2;ctx.strokeStyle='#f5ce83';ctx.beginPath();ctx.ellipse(q.x,q.y+25,19,7,0,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#fff2c6';ctx.font='bold 11px system-ui';ctx.textAlign='center';ctx.shadowColor='#10211c';ctx.shadowBlur=5;ctx.fillText('◆ '+t.name,q.x,q.y-2);ctx.shadowBlur=0}}}
-function drawMini(){let mini=$('#minimap'),c=mini.getContext('2d'),sx=mini.width/((WORLD_X)*CELL),sz=mini.height/((WORLD_Z)*CELL);c.fillStyle='#3e6049';c.fillRect(0,0,mini.width,mini.height);for(let i=0;i<100;i++){c.fillStyle=i%2?'#41644b':'#4a6b4e';let x=hash(i*11)*mini.width,z=hash(i*42)*mini.height;c.fillRect(x,z,3,3)}c.strokeStyle='#d1baa0';c.lineWidth=3;c.beginPath();for(let [a,set] of graph)for(let b of set)if(a<b){let A=world(a),B=world(b);c.moveTo(A.x*sx,A.z*sz);c.lineTo(B.x*sx,B.z*sz)}c.stroke();for(let s of signals){let A=world(s.a),B=world(s.b),x=mix(A.x,B.x,.27)*sx,z=mix(A.z,B.z,.27)*sz;c.beginPath();c.arc(x,z,2.2,0,6.283);c.fillStyle=signalStatus(s)==='green'?'#68e6ad':'#f37163';c.fill()}c.fillStyle='#e2a45f';for(let s of stations){let p=world(s.node);c.fillRect(p.x*sx-3,p.z*sz-3,6,6)}for(let t of trains){let p=head(t);c.beginPath();c.arc(p.x*sx,p.z*sz,3.8,0,6.283);c.fillStyle=t.id===selectedTrainId?'#fff5ba':'#e15a55';c.fill()}
+ if(showGrid){ctx.save();ctx.strokeStyle='#c8d3bc';ctx.globalAlpha=.14;ctx.lineWidth=1;
+  const range=24,ix=Math.round(camera.x/CELL),iz=Math.round(camera.z/CELL);
+  for(let x=Math.max(0,ix-range);x<=Math.min(WORLD_X-1,ix+range);x++){
+   let a=project(x*CELL,.055,Math.max(0,iz-range)*CELL),b=project(x*CELL,.055,Math.min(WORLD_Z-1,iz+range)*CELL);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}
+  for(let z=Math.max(0,iz-range);z<=Math.min(WORLD_Z-1,iz+range);z++){
+   let a=project(Math.max(0,ix-range)*CELL,.055,z*CELL),b=project(Math.min(WORLD_X-1,ix+range)*CELL,.055,z*CELL);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()}
+  ctx.restore();
+ }
+ if(mode==='rail'&&anchor&&hover&&hover!==anchor){let key=anchor+'>'+hover+'@'+anchorFrom;
+  if(key!==previewKey){previewKey=key;previewNodes=planRail(anchor,hover,anchorFrom);if(!routeCanBuild(previewNodes))previewNodes=null}
+  drawGhostPath(previewNodes);
+ }
+ if(mode==='rail'&&!anchor&&hover){let [x,z]=parseKey(hover),[dx,dz]=DIRS[railHeading],next=K(x+dx,z+dz);
+  if(graph.has(hover)){let p=world(hover),a=project(p.x,.75,p.z);ctx.fillStyle='#aef7b6';ctx.font='bold 11px system-ui';ctx.fillText('▶ Click to extend rail here',a.x-40,a.y-22);
+    for(let n of neighbors(hover)){let q=world(n),dx=p.x-q.x,dz=p.z-q.z,l=Math.hypot(dx,dz),b=project(p.x+dx/l*1.4,.63,p.z+dz/l*1.4);ctx.fillStyle='#aaf5c5';ctx.beginPath();ctx.moveTo(b.x,b.y-6);ctx.lineTo(b.x+6,b.y+5);ctx.lineTo(b.x-6,b.y+5);ctx.fill()}}
+  else if(keyValid(next))drawGhostPath([hover,next]);
+ }
+ if(hover&&mode!=='select'){let p=world(hover),q=project(p.x,.22,p.z);ctx.beginPath();ctx.arc(q.x,q.y,7,0,Math.PI*2);ctx.strokeStyle='#ffe09b';ctx.lineWidth=2;ctx.stroke()}
+ if(mode==='rail'&&anchor){let A=world(anchor),p=project(A.x,.70,A.z);ctx.fillStyle='#ffce74';ctx.beginPath();ctx.arc(p.x,p.y,7,0,Math.PI*2);ctx.fill()}
+ if(['timber','iron','depot','freight'].includes(mode)&&hover){let p=world(hover),v=project(p.x,1,p.z),valid=industryCanPlace(mode,hover);
+  ctx.save();ctx.strokeStyle=valid?'#94e4b4':'#fd9d8b';ctx.fillStyle=valid?'#b5efca36':'#fb8d8244';ctx.lineWidth=3;
+  let polygon=[[-3.8,-3.8],[3.8,-3.8],[3.8,3.8],[-3.8,3.8]];ctx.beginPath();for(let i=0;i<polygon.length;i++){let [x,z]=polygon[i],pt=project(p.x+x,.15,p.z+z);i?ctx.lineTo(pt.x,pt.y):ctx.moveTo(pt.x,pt.y)}ctx.closePath();ctx.fill();ctx.stroke();ctx.fillStyle=valid?'#c1f5cd':'#ffc4b5';ctx.font='bold 12px system-ui';ctx.textAlign='center';ctx.fillText(valid?'Click to construct':'Requires matching resource / clear space',v.x,v.y-18);ctx.restore();
+ }
+ if(showBlocks){for(let block of blocks){ctx.save();ctx.strokeStyle=['#89d3ee','#eec981','#bd9def','#eab1b0','#a6db8b'][block.id%5];ctx.globalAlpha=.55;ctx.lineWidth=4;ctx.beginPath();for(let e of block.edges){let [a,b]=e.split('|'),A=world(a),B=world(b),u=project(A.x,.5,A.z),v=project(B.x,.5,B.z);ctx.moveTo(u.x,u.y);ctx.lineTo(v.x,v.y)}ctx.stroke();ctx.restore()}}
+ if(['block','chain'].includes(mode)&&hover){let e=closestEdge(unproject(mouse.x,mouse.y));if(e&&e.d<1.25){let a=world(e.a),b=world(e.b),q=project(mix(a.x,b.x,.27),1.2,mix(a.z,b.z,.27));ctx.fillStyle='#fff0c3';ctx.font='bold 12px system-ui';ctx.fillText('Click to install '+mode+' signal',q.x-58,q.y-14)}}
+ for(let t of trains){let p=head(t),q=project(p.x,2.65,p.z);if(t.id===selectedTrainId){ctx.fillStyle='#fff0ca';ctx.textAlign='center';ctx.font='bold 12px system-ui';ctx.fillText('◆ '+t.name,q.x,q.y-3)}}
+}
+function industryCanPlace(kind,node){
+ if(!keyValid(node)||industries.some(s=>dist(world(s.node),world(node))<9))return false;
+ if((kind==='timber'||kind==='iron')&&!depositNear(node,kind))return false;
+ return ![...graph.keys()].some(k=>dist(world(k),world(node))<4.5);
+}
+function drawMini(){let mini=$('#minimap'),c=mini.getContext('2d'),sx=mini.width/((WORLD_X)*CELL),sz=mini.height/((WORLD_Z)*CELL);c.fillStyle='#3e6049';c.fillRect(0,0,mini.width,mini.height);for(let i=0;i<100;i++){c.fillStyle=i%2?'#41644b':'#4a6b4e';let x=hash(i*11)*mini.width,z=hash(i*42)*mini.height;c.fillRect(x,z,3,3)}for(let d of DEPOSITS){c.fillStyle=d.kind==='iron'?'#87a4ac':'#4f9065';c.beginPath();c.arc(d.x*CELL*sx,d.z*CELL*sz,Math.max(2,d.r*CELL*sx*.45),0,Math.PI*2);c.fill()}for(let s of industries){let p=world(s.node);c.fillStyle=s.kind==='depot'?'#f2c674':s.kind==='freight'?'#a3e6d7':'#f6edd8';c.fillRect(p.x*sx-3,p.z*sz-3,6,6)}c.strokeStyle='#d1baa0';c.lineWidth=3;c.beginPath();for(let [a,set] of graph)for(let b of set)if(a<b){let A=world(a),B=world(b);c.moveTo(A.x*sx,A.z*sz);c.lineTo(B.x*sx,B.z*sz)}c.stroke();for(let s of signals){let A=world(s.a),B=world(s.b),x=mix(A.x,B.x,.27)*sx,z=mix(A.z,B.z,.27)*sz;c.beginPath();c.arc(x,z,2.2,0,6.283);c.fillStyle=signalStatus(s)==='green'?'#68e6ad':'#f37163';c.fill()}c.fillStyle='#e2a45f';for(let s of stations){let p=world(s.node);c.fillRect(p.x*sx-3,p.z*sz-3,6,6)}for(let t of trains){let p=head(t);c.beginPath();c.arc(p.x*sx,p.z*sz,3.8,0,6.283);c.fillStyle=t.id===selectedTrainId?'#fff5ba':'#e15a55';c.fill()}
 let scaleX=mini.width/(WORLD_X*CELL),scaleZ=mini.height/(WORLD_Z*CELL),corner=[unproject(0,0),unproject(viewport.w,0),unproject(viewport.w,viewport.h),unproject(0,viewport.h)];c.beginPath();corner.forEach((p,i)=>i?c.lineTo(p.x*scaleX,p.z*scaleZ):c.moveTo(p.x*scaleX,p.z*scaleZ));c.closePath();c.strokeStyle='#b7e9cb';c.lineWidth=1.2;c.stroke()}
 function updateStats(){let c=0;for(let [a,set] of graph)for(let b of set)if(a<b)c++;$('#trackcount').textContent=c;$('#traincount').textContent=trains.length;let n=$('#signalcount');if(n)n.textContent=signals.length;let b=$('#blockcount');if(b)b.textContent=blocks.length}
 function announce(s){$('#hinttext').textContent=s;$('#notice').textContent=s;$('#notice').style.opacity='1';noticeExpiry=performance.now()+3300}
-function setMode(m,silent=false){mode=m;anchor=null;anchorFrom=null;previewNodes=null;previewKey='';$all('.tool').forEach(b=>b.classList.toggle('active',b.dataset.mode===m));let helps={rail:'Factorio-style rail planner: click a starting point, move to preview a smoothed alignment, click to construct. Click an existing rail to branch, Esc to end. Alt+Z undoes the last build.',junction:'Click a turnout (3+ rail connections) to cycle its manual preferred direction. Trains with destinations automatically line up points.',block:'Click rail to place a BLOCK signal: protects the next occupied track block. Press F to reverse signal direction.',chain:'Click rail to place a CHAIN signal: reserves a path through a junction until the next exit. Press F to flip direction.',select:'Click a locomotive in the world to manage its route, carriages, speed and orders.',station:'Click an existing rail node to add a train station. Trains can route to any connected station.',train:'Click any connected track node to place a new locomotive and wagon.',delete:'Click close to a rail segment or station to remove it. The trains will react if their line breaks.'};$('#toolhelp').textContent=helps[m];if(!silent)announce(helps[m])}
+function setMode(m,silent=false){mode=m;anchor=null;anchorFrom=null;previewNodes=null;previewKey='';$all('.tool').forEach(b=>b.classList.toggle('active',b.dataset.mode===m));let helps={timber:'Click within a GREEN FOREST to build a logging camp. Place a station on rail nearby.',iron:'Click within a GREY-BLUE ORE deposit to place an ore mine.',depot:'Build machine works on clear land. It consumes shipped timber and steel.',freight:'Build a distribution hub on clear land to receive machinery.',rail:'Click open ground to place the first rail; then move and click to extend. Click an existing track connector to branch. R again rotates the first piece; right-click or Escape ends the planner.',junction:'Click a turnout (3+ rail connections) to cycle its manual preferred direction. Trains with destinations automatically line up points.',block:'Click rail to place a BLOCK signal: protects the next occupied track block. Press F to reverse signal direction.',chain:'Click rail to place a CHAIN signal: reserves a path through a junction until the next exit. Press F to flip direction.',select:'Click a locomotive in the world to manage its route, carriages, speed and orders.',station:'Build a station on connected rail near a logging camp, mine, factory or distributor.',train:'Click any connected track node to place a new locomotive and wagon.',delete:'Click close to a rail segment or station to remove it. The trains will react if their line breaks.'};$('#toolhelp').textContent=helps[m];if(!silent)announce(helps[m])}
 function routePresetFor(t){let kinds=t.schedule?.map(id=>stationById(id)?.kind)||[];if(kinds.join(',')==='timber,depot'&&t.freightType==='timber')return'timber';if(kinds.join(',')==='iron,depot'&&t.freightType==='steel')return'steel';if(kinds.join(',')==='depot,freight'&&t.freightType==='machinery')return'machinery';if(kinds.length===stations.length&&kinds.every((v,i)=>stations[i]?.kind===v))return'all';return'keep'}
 function updateUI(){let t=trains.find(t=>t.id===selectedTrainId),root=$('#traincontent');if(!t){root.innerHTML=`<div class="sectionlabel">LOCOMOTIVE CONTROL</div><div class="no-train">No train selected. Choose <b>Select train</b> and click a locomotive, or place a new train onto the rail network.</div>`;return}
 root.innerHTML=`<div class="panel-heading"><span class="eyebrow">LOCOMOTIVE CONTROL</span><span class="countbadge">TRAIN #${String(t.id).padStart(2,'0')}</span></div><div class="trainname">${t.name}</div><div class="trainillustration">🚂 <span style="font-size:27px;opacity:.8">🚃🚃</span></div><div class="metricrow"><div class="metric"><span>Speed</span><strong id="speedvalue">0 km/h</strong></div><div class="metric"><span>Status</span><strong id="statusvalue" style="font-size:12px">Running</strong></div></div><label class="fieldlabel" for="stationselect">NEXT DESTINATION</label><select id="stationselect">${stations.map(s=>`<option value="${s.id}" ${s.id===t.target?'selected':''}>${s.name.replaceAll('<','&lt;')}</option>`).join('')}</select><div class="btnrow"><button id="btnSend" class="actionbtn">→ Dispatch train</button><button id="btnHold" class="actionbtn secondary">${t.halted?'▶ Resume':'Ⅱ Stop'}</button></div><div class="controlrow"><span>Automatic station schedule</span><input class="switch" id="autoSchedule" type="checkbox" ${t.auto?'checked':''}></div><div class="controlrow"><span>Obey manual switch points</span><input class="switch" id="manualPoints" type="checkbox" ${t.manualPoints?'checked':''}></div><label class="fieldlabel">CRUISING SPEED <span id="speedcap">${Math.round(t.speedCap*12)} km/h</span></label><input id="trainSpeed" type="range" min="1" max="8" step="0.2" value="${t.speedCap}"><div class="controlrow"><span>Wagons attached</span><span><button class="smallbtn" id="removeWagon" style="padding:4px 10px">−</button> <b id="wagoncount">${t.cars}</b> <button class="smallbtn" id="addWagon" style="padding:4px 10px">+</button></span></div><label class="fieldlabel" for="routePreset">AUTOMATIC ROUTE</label><select id="routePreset"><option value="keep" ${routePresetFor(t)==='keep'?'selected':''}>Custom route / current order</option><option value="timber" ${routePresetFor(t)==='timber'?'selected':''}>🌲 Timber Mill ↔ Central Depot</option><option value="steel" ${routePresetFor(t)==='steel'?'selected':''}>⚙ Ironworks ↔ Central Depot</option><option value="machinery" ${routePresetFor(t)==='machinery'?'selected':''}>📦 Central Depot ↔ Distribution</option><option value="all" ${routePresetFor(t)==='all'?'selected':''}>↻ Visit every station</option></select><label class="fieldlabel" for="freightType">FREIGHT ORDER · EACH WAGON HOLDS 14 UNITS</label><select id="freightType">${Object.entries(GOODS).map(([id,good])=>`<option value="${id}" ${t.freightType===id?'selected':''}>${good.icon} ${good.label}</option>`).join('')}</select><div class="trainhint"><span style="color:#edba70">◉</span> Load: <b id="cargoValue">${t.load||0} ${GOODS[t.loadGood||'timber'].label}</b><br>Stops automatically load cargo at producers and unload at industries that need it. Select matching source and destination stations.</div>`;
 $('#routePreset').onchange=e=>{let v=e.target.value,kind=v==='steel'?'steel':v==='machinery'?'machinery':'timber';let stops=v==='all'?stations.map(s=>s.id):v==='keep'?t.schedule:([v==='steel'?'iron':v==='machinery'?'depot':'timber',v==='machinery'?'freight':'depot'].map(k=>stations.find(s=>s.kind===k)?.id).filter(Boolean));if(stops.length<2){announce('This route needs two stations.');return}t.schedule=stops;t.freightType=kind;t.target=stops[0];t.stopIndex=0;t.nextTarget=null;t.auto=true;t.halted=false;t.dwell=0;if(t.progress===0){let next=bestNext(t,t.from);if(next)t.to=next;}announce(`${t.name}: ${GOODS[kind].label} route activated.`);updateUI()};$('#freightType').onchange=e=>{t.freightType=e.target.value;t.cargo=t.load>0?t.loadGood.toUpperCase():'EMPTY';announce('Assigned '+GOODS[t.freightType].label+' freight to '+t.name);updateUI()};$('#btnSend').onclick=()=>{let newtarget=$('#stationselect').value;let st=stationById(newtarget);if(!st)return;t.target=newtarget;t.nextTarget=null;t.dwell=0;t.halted=false;t.auto=false;t.status='Dispatched';if(t.progress===0){let departure=bestNext(t,t.from);if(departure)t.to=departure;}announce(`${t.name} dispatched to ${st.name}`);updateUI()};$('#btnHold').onclick=()=>{t.halted=!t.halted;announce(t.halted?`${t.name}: emergency hold`:`${t.name}: resuming service`);updateUI()};$('#manualPoints').onchange=e=>{t.manualPoints=e.target.checked;announce(t.manualPoints?'Manual points override enabled for this train':'Automatic junction routing restored')};$('#autoSchedule').onchange=e=>{t.auto=e.target.checked;if(t.auto){if(!t.schedule?.length)t.schedule=stations.map(s=>s.id);t.nextTarget=null}announce(t.auto?'Automatic timetable enabled':'Manual dispatch enabled')};$('#trainSpeed').oninput=e=>{t.speedCap=+e.target.value;$('#speedcap').textContent=Math.round(t.speedCap*12)+' km/h'};$('#addWagon').onclick=()=>{t.cars=Math.min(5,t.cars+1);$('#wagoncount').textContent=t.cars;updateUI()};$('#removeWagon').onclick=()=>{t.cars=Math.max(0,t.cars-1);$('#wagoncount').textContent=t.cars;updateUI()}}
 function updateTrainUI(){let t=trains.find(t=>t.id===selectedTrainId);if(!t)return;let speed=$('#speedvalue');if(speed){speed.textContent=Math.round(t.speed*12)+' km/h';$('#statusvalue').textContent=t.status;$('#cargoValue').textContent=(t.load||0)+' '+GOODS[t.loadGood||'timber'].label}}
 function clickWorld(px,py){let p=unproject(px,py),node=snap(p),nodePos=world(node);
-if(mode==='rail'){if(!anchor){anchor=node;anchorFrom=null;previewNodes=null;announce('Rail start selected. Move your mouse to preview a smooth planned curve.')}else if(node===anchor){anchor=null;anchorFrom=null;previewNodes=null;announce('Track finished.')}else{let result=layPlanned(anchor,node,anchorFrom);if(result.route){anchorFrom=result.route.at(-2);anchor=node;previewNodes=null;previewKey='';announce(result.added?`Laid ${result.added} compatible rail sections with curved transitions.`:'Already connected — choose another point.')}else announce('No viable rail alignment here — try a wider approach or start a new branch.')}}
+if(mode==='rail'){
+ if(!anchor){
+  if(graph.has(node)){
+   anchor=node;let ns=neighbors(node),aim=unproject(mouse.x,mouse.y);
+   ns.sort((aa,bb)=>{let p=world(node),a=world(aa),b=world(bb);return (a.x-p.x)*(aim.x-p.x)+(a.z-p.z)*(aim.z-p.z)-((b.x-p.x)*(aim.x-p.x)+(b.z-p.z)*(aim.z-p.z))});
+   anchorFrom=ns[0]||null;announce('Rail connector selected. Aim and click to extend or branch.');
+  }else{
+   let [x,z]=parseKey(node),[dx,dz]=DIRS[railHeading],next=K(x+dx,z+dz);
+   if(!keyValid(next)){announce('Rail starts must be inside the map.');return}
+   if(!routeCanBuild([node,next])){announce('A building blocks this rail section.');return}
+   link(node,next);lastBuild=[[node,next]];recomputeBlocks();anchor=next;anchorFrom=node;
+   announce('Starting rail laid! Move the cursor to preview bends, then click to build.');
+  }
+  previewNodes=null;previewKey='';
+ }else if(node===anchor){anchor=null;anchorFrom=null;previewNodes=null;announce('Rail planner ended.')}
+ else{
+  let result=layPlanned(anchor,node,anchorFrom);
+  if(result.route){anchorFrom=result.route.at(-2);anchor=result.route.at(-1);previewNodes=null;previewKey='';announce(result.added?'Built '+result.added+' rail sections. Continue extending.':'Connected track selected.');}
+  else announce('No suitable route: try a wider curve or another approach.');
+ }
+}
+else if(['timber','iron','depot','freight'].includes(mode)){
+ if(!industryCanPlace(mode,node)){announce('Building needs the correct resource deposit and enough clear ground.');return}
+ let site=addIndustry(mode,node);
+ if(site){bank=Math.max(0,bank-160);updateIndustryUI();announce(site.name+' built. Connect it to your railway using a nearby station.');}
+}
 else if(mode==='junction'){if(!turnPoint(node))announce('A junction needs at least three tracks meeting at one point. Build a branch first.')}
 else if(mode==='block'||mode==='chain'){let e=closestEdge(p);if(!e||e.d>1.20){announce('Click directly on a rail to attach a signal.');return}let closer=dist(p,world(e.a))<=dist(p,world(e.b))?e.a:e.b;let a=signalReverse?(closer===e.a?e.b:e.a):closer,b=a===e.a?e.b:e.a;placeSignal(a,b,mode==='block'?'rail':'chain')}
-else if(mode==='station'){if(dist(p,nodePos)>1.65||!graph.has(node)){announce('Stations must sit on an existing track node.');return}let old=stations.find(s=>s.node===node);if(old){announce('A station is already at that track node.');return}let s=addStation('Outpost '+nextStation,node);for(let t of trains){t.schedule.push(s.id)}dirty=true;updateUI();announce(`${s.name} built — trains can now be sent here.`)}
+else if(mode==='station'){if(dist(p,nodePos)>1.65||!graph.has(node)){announce('Stations must sit on an existing track node.');return}let old=stations.find(s=>s.node===node);if(old){announce('A station is already at that track node.');return}let s=addStation('Rail Station '+nextStation,node,'unassigned');for(let t of trains){t.schedule.push(s.id)}dirty=true;updateUI();announce(`${s.name} built — trains can now be sent here.`)}
 else if(mode==='train'){if(!graph.has(node)){announce('Place locomotives on connected track.');return}let neighborsHere=neighbors(node);if(!neighborsHere.length)return;let closest=nearestTrain(nodePos);if(closest&&dist(head(closest),nodePos)<2.5){announce('Choose an empty track section for the new locomotive.');return}let t=createTrain(node,neighborsHere[0]);t.past=seedPast(node,neighborsHere[0]);updateUI();announce(`${t.name} placed. Set its destination or use automatic schedule.`)}
 else if(mode==='select'){let t=nearestTrain(p);if(t){selectedTrainId=t.id;updateUI();announce(`${t.name} selected — use the control panel to manage it.`)}else{let st=stations.find(s=>dist(p,world(s.node))<1.5);if(st)announce(`${st.name} — send trains here from the train controls.`)}}
-else if(mode==='delete'){let sig=signals.find(s=>{let a=world(s.a),b=world(s.b),pos={x:mix(a.x,b.x,.27),z:mix(a.z,b.z,.27)};return dist(p,pos)<.65});if(sig){signals=signals.filter(s=>s!==sig);recomputeBlocks();dirty=true;announce('Signal demolished.');return}let s=stations.find(s=>dist(p,world(s.node))<1.35);if(s){stations=stations.filter(t=>t!==s);trains.forEach(t=>{t.schedule=t.schedule.filter(id=>id!==s.id);if(t.target===s.id){t.target=t.schedule[0]||null}if(t.nextTarget===s.id)t.nextTarget=null});dirty=true;updateUI();announce('Station removed.');return}let e=closestEdge(p);if(e&&e.d<1.08){removeEdge(e.a,e.b);announce('Track removed. Trains will stop if their route is interrupted.')}else announce('Click closer to the track to demolish it.')}
+else if(mode==='delete'){let site=industries.find(s=>dist(p,world(s.node))<4.7);if(site){industries=industries.filter(s=>s!==site);dirty=true;updateIndustryUI();announce(site.name+' demolished.');return}let sig=signals.find(s=>{let a=world(s.a),b=world(s.b),pos={x:mix(a.x,b.x,.27),z:mix(a.z,b.z,.27)};return dist(p,pos)<.65});if(sig){signals=signals.filter(s=>s!==sig);recomputeBlocks();dirty=true;announce('Signal demolished.');return}let s=stations.find(s=>dist(p,world(s.node))<1.35);if(s){stations=stations.filter(t=>t!==s);trains.forEach(t=>{t.schedule=t.schedule.filter(id=>id!==s.id);if(t.target===s.id){t.target=t.schedule[0]||null}if(t.nextTarget===s.id)t.nextTarget=null});dirty=true;updateUI();announce('Station removed.');return}let e=closestEdge(p);if(e&&e.d<1.08){removeEdge(e.a,e.b);announce('Track removed. Trains will stop if their route is interrupted.')}else announce('Click closer to the track to demolish it.')}
 }
 function panFromPointer(dx,dy){
  let a=unproject(viewport.w/2,viewport.h/2),b=unproject(viewport.w/2+dx,viewport.h/2+dy);
@@ -393,9 +524,10 @@ canvas.addEventListener('pointermove',e=>{
  hover=snap(unproject(e.clientX,e.clientY));
  mouse.lastX=e.clientX;mouse.lastY=e.clientY;
 });
-canvas.addEventListener('pointerup',e=>{if(mouse.down&&mouse.button===0&&!mouse.dragging)clickWorld(e.clientX,e.clientY);mouse.down=false;mouse.dragging=false});
+canvas.addEventListener('pointerup',e=>{if(mouse.down&&mouse.button===0&&!mouse.dragging)clickWorld(e.clientX,e.clientY);else if(mouse.down&&mouse.button===2&&!mouse.dragging&&mode==='rail'){anchor=null;anchorFrom=null;previewNodes=null;previewKey='';announce('Rail planner cancelled.')}mouse.down=false;mouse.dragging=false});
 canvas.addEventListener('pointercancel',()=>{mouse.down=false;mouse.dragging=false});
 window.addEventListener('blur',()=>heldKeys.clear());
+$('#minimap').addEventListener('pointerdown',e=>{let r=e.currentTarget.getBoundingClientRect();camera.x=clamp((e.clientX-r.left)/r.width*WORLD_X*CELL,0,(WORLD_X-1)*CELL);camera.z=clamp((e.clientY-r.top)/r.height*WORLD_Z*CELL,0,(WORLD_Z-1)*CELL)});
 canvas.addEventListener('wheel',e=>{e.preventDefault();let old=unproject(e.clientX,e.clientY);camera.zoom=clamp(camera.zoom*Math.exp(-e.deltaY*.0011),.48,3.4);let now=unproject(e.clientX,e.clientY);camera.x+=old.x-now.x;camera.z+=old.z-now.z},{passive:false});
 window.addEventListener('keyup',e=>heldKeys.delete(e.key.toLowerCase()));
 window.addEventListener('keydown',e=>{
@@ -404,22 +536,22 @@ window.addEventListener('keydown',e=>{
  if(['q','e','w','a','d','arrowup','arrowdown','arrowleft','arrowright'].includes(k)){heldKeys.add(k);if(k.startsWith('arrow')||['q','e'].includes(k))e.preventDefault();}
  // Keep S as the station shortcut on the initial press, but holding S pans.
  if(e.repeat)return;
- if(k==='r')setMode('rail');else if(k==='v')setMode('select');else if(k==='s')setMode('station');else if(k==='t')setMode('train');else if(k==='x')setMode('delete');else if(k==='j')setMode('junction');else if(k==='b')setMode('block');else if(k==='c')setMode('chain');else if(k==='f'){signalReverse=!signalReverse;announce('Signal orientation '+(signalReverse?'reversed':'normal'));}else if(k==='h'){showBlocks=!showBlocks;announce('Block boundary overlay '+(showBlocks?'enabled':'disabled'))}else if((e.altKey&&k==='z')||(e.ctrlKey&&k==='z')){e.preventDefault();if(lastBuild.length){for(let [a,b] of lastBuild)removeEdge(a,b);lastBuild=[];announce('Last track construction undone.')}else announce('Nothing to undo.')}else if(k==='g'){showGrid=!showGrid;dirty=true}else if(k==='escape'){anchor=null;anchorFrom=null;previewNodes=null;$('#help').classList.remove('show');announce('Action cancelled.')}else if(e.code==='Space'){paused=!paused;announce(paused?'Simulation paused':'Simulation resumed');e.preventDefault()}
+ if(k==='1')setMode('timber');else if(k==='2')setMode('iron');else if(k==='3')setMode('depot');else if(k==='4')setMode('freight');else if(k==='r'){if(mode==='rail'&&!anchor){railHeading=(railHeading+1)%8;announce('Starting rail rotated 45 degrees.')}else setMode('rail');}else if(k==='v')setMode('select');else if(k==='s')setMode('station');else if(k==='t')setMode('train');else if(k==='x')setMode('delete');else if(k==='j')setMode('junction');else if(k==='b')setMode('block');else if(k==='c')setMode('chain');else if(k==='f'){signalReverse=!signalReverse;announce('Signal orientation '+(signalReverse?'reversed':'normal'));}else if(k==='h'){showBlocks=!showBlocks;announce('Block boundary overlay '+(showBlocks?'enabled':'disabled'))}else if((e.altKey&&k==='z')||(e.ctrlKey&&k==='z')){e.preventDefault();if(lastBuild.length){for(let [a,b] of lastBuild)removeEdge(a,b);lastBuild=[];announce('Last track construction undone.')}else announce('Nothing to undo.')}else if(k==='g'){showGrid=!showGrid;dirty=true}else if(k==='escape'){anchor=null;anchorFrom=null;previewNodes=null;$('#help').classList.remove('show');announce('Action cancelled.')}else if(e.code==='Space'){paused=!paused;announce(paused?'Simulation paused':'Simulation resumed');e.preventDefault()}
 });
 $all('.tool').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));$('#btnRotateLeft').onclick=()=>viewTarget.yaw-=Math.PI/8;
 $('#btnRotateRight').onclick=()=>viewTarget.yaw+=Math.PI/8;
-$('#btnResetView').onclick=()=>{camera.x=14.6*CELL;camera.z=10.5*CELL;camera.zoom=.94;viewTarget.yaw=-.77;viewTarget.elev=.94;announce('Camera recentered and orientation reset.')};$('#btnHelp').onclick=()=>$('#help').classList.add('show');$('#btnCloseHelp').onclick=()=>$('#help').classList.remove('show');
-function snapshot(){let state={version:3,edges:[],stations,trains,signals,points:[...points.entries()],nextTrain,nextStation,nextSignal,bank,delivered};for(let [a,links] of graph)for(let b of links)if(a<b)state.edges.push([a,b]);return state}
+$('#btnResetView').onclick=()=>{camera.x=90*CELL;camera.z=70*CELL;camera.zoom=.94;viewTarget.yaw=-.77;viewTarget.elev=.94;announce('Camera recentered and orientation reset.')};$('#btnHelp').onclick=()=>$('#help').classList.add('show');$('#btnCloseHelp').onclick=()=>$('#help').classList.remove('show');
+function snapshot(){let state={version:5,edges:[],stations,industries,trains,signals,points:[...points.entries()],nextTrain,nextStation,nextSignal,nextIndustry,bank,delivered};for(let [a,links] of graph)for(let b of links)if(a<b)state.edges.push([a,b]);return state}
 function save(){try{localStorage.setItem(STORAGE,JSON.stringify(snapshot()));announce('Railway saved in this browser.')}catch(e){announce('Browser storage unavailable — use Export instead.')}}
 function loadState(s){if(!s||!Array.isArray(s.edges)||!Array.isArray(s.trains)||!Array.isArray(s.stations))return false;
 // Reject malformed imported rail endpoints and out-of-map data.
-if(s.edges.length>12000||s.trains.length>300||s.stations.length>1200||s.edges.some(e=>!Array.isArray(e)||e.length!==2||!e.every(n=>typeof n==='string'&&keyValid(n))||Math.max(...parseKey(e[0]).map((v,i)=>Math.abs(v-parseKey(e[1])[i])))!==1))return false;
-graph=new Map();for(let [a,b] of s.edges)link(a,b);stations=s.stations||[];trains=s.trains||[];nextTrain=s.nextTrain||trains.length+1;nextStation=s.nextStation||stations.length+1;signals=(s.signals||[]).filter(sig=>graph.get(sig.a)?.has(sig.b));points=new Map(s.points||[]);nextSignal=s.nextSignal||signals.length+1;bank=s.bank??1200;delivered=s.delivered||0;for(let st of stations)ensureIndustry(st);recomputeBlocks();selectedTrainId=trains[0]?.id||null;for(let t of trains){t.phase=t.phase||'edge';t.turnProgress=t.turnProgress||0;t.past=t.past||[];t.schedule=t.schedule||stations.map(s=>s.id);t.speed=0;t.status='Ready';t.dwell=0;t.nextTarget=null;t.progress=clamp(t.progress||0,0,.999);t.cars=clamp(t.cars||0,0,5);t.freightType=t.freightType||'timber';t.manualPoints=!!t.manualPoints;t.load=t.load||0;t.loadGood=t.loadGood||'timber';if(!t.trail?.length)resetTrail(t)}dirty=true;setMode('select',true);updateUI();updateIndustryUI();return true}
-function load(){try{return loadState(JSON.parse(localStorage.getItem(STORAGE)||localStorage.getItem(OLD_STORAGE)||localStorage.getItem(FIRST_STORAGE)))}catch(e){return false}}
+if(s.edges.length>25000||s.trains.length>300||s.stations.length>1200||s.industries?.length>120||s.edges.some(e=>!Array.isArray(e)||e.length!==2||!e.every(n=>typeof n==='string'&&keyValid(n))||Math.max(...parseKey(e[0]).map((v,i)=>Math.abs(v-parseKey(e[1])[i])))!==1))return false;
+graph=new Map();for(let [a,b] of s.edges)link(a,b);stations=s.stations||[];industries=Array.isArray(s.industries)?s.industries:[];nextIndustry=s.nextIndustry||industries.length+1;trains=s.trains||[];nextTrain=s.nextTrain||trains.length+1;nextStation=s.nextStation||stations.length+1;signals=(s.signals||[]).filter(sig=>graph.get(sig.a)?.has(sig.b));points=new Map(s.points||[]);nextSignal=s.nextSignal||signals.length+1;bank=s.bank??5000;delivered=s.delivered||0;for(let st of stations)ensureIndustry(st);recomputeBlocks();selectedTrainId=trains[0]?.id||null;for(let t of trains){t.phase=t.phase||'edge';t.turnProgress=t.turnProgress||0;t.past=t.past||[];t.schedule=t.schedule||stations.map(s=>s.id);t.speed=0;t.status='Ready';t.dwell=0;t.nextTarget=null;t.progress=clamp(t.progress||0,0,.999);t.cars=clamp(t.cars||0,0,5);t.freightType=t.freightType||'timber';t.manualPoints=!!t.manualPoints;t.load=t.load||0;t.loadGood=t.loadGood||'timber';if(!t.trail?.length)resetTrail(t)}dirty=true;setMode('select',true);updateUI();updateIndustryUI();return true}
+function load(){try{const raw=localStorage.getItem(STORAGE);return raw?loadState(JSON.parse(raw)):false}catch(e){return false}}
 function exportSave(){let blob=new Blob([JSON.stringify(snapshot(),null,2)],{type:'application/json'});let u=URL.createObjectURL(blob);let a=document.createElement('a');a.href=u;a.download='railworks-railway-save.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),250);announce('Railway exported as JSON. Keep a copy before updating itch.io.')}
 $('#btnExport').onclick=exportSave;$('#btnImport').onclick=()=>$('#importSave').click();$('#importSave').onchange=async e=>{let file=e.target.files?.[0];if(!file)return;try{let candidate=JSON.parse(await file.text());if(!candidate||!Array.isArray(candidate.edges)||!Array.isArray(candidate.stations)||!Array.isArray(candidate.trains))throw Error('Invalid railway file');if(!confirm('Replace your current railway with this imported save?'))return;if(!loadState(candidate))throw Error('Invalid railway data');save();announce('Railway imported successfully.')}catch(err){announce('Cannot import this file: '+err.message)}finally{e.target.value=''}};
-$('#btnSave').onclick=save;$('#btnReset').onclick=()=>{if(confirm('Reset the whole railway to the original starter map? This will also remove your saved network.')){try{localStorage.removeItem(STORAGE);localStorage.removeItem(OLD_STORAGE);localStorage.removeItem(FIRST_STORAGE)}catch(e){}demo()}};
+$('#btnSave').onclick=save;$('#btnReset').onclick=()=>{if(confirm('Delete this frontier and begin with a blank map? Export your save first if needed.')){try{localStorage.removeItem(STORAGE)}catch(e){}emptyWorld()}};
 function loop(now){let dt=Math.min(.08,Math.max(0,(now-timePrev)/1000||.016));timePrev=now;tickCamera(dt);if(!paused)tickTrains(dt);render3D();overlayDraw();labels();if(now-minimapTick>180){drawMini();minimapTick=now}if(now-uiTick>110){updateTrainUI();uiTick=now}if(noticeExpiry&&now>noticeExpiry){$('#notice').style.opacity='0';noticeExpiry=0}requestAnimationFrame(loop)}
-window.__RAILWORKS_TEST={get graph(){return graph},get trains(){return trains},get stations(){return stations},get signals(){return signals},get blocks(){return blocks},get bank(){return bank},get delivered(){return delivered},get blockByEdge(){return blockByEdge},project,world,K,shortest,entryBlocks,signalAt,placeSignal,link,addLine,planRail,layPlanned,bendAllowed,edgeEnds,curveAt,curveLength,head,behind,trackRibbon,get camera(){return camera},get viewTarget(){return viewTarget},get heldKeys(){return heldKeys},tickCamera,recordTrail,resetTrail,recomputeBlocks,occupiedBy,createTrain,tickTrains,demo,addStation,setMode,clickWorld,turnPoint};
+window.__RAILWORKS_TEST={get graph(){return graph},get trains(){return trains},get stations(){return stations},get industries(){return industries},get DEPOSITS(){return DEPOSITS},get mapSize(){return [WORLD_X,WORLD_Z]},get anchor(){return anchor},get signals(){return signals},get blocks(){return blocks},get bank(){return bank},get delivered(){return delivered},get blockByEdge(){return blockByEdge},project,world,K,shortest,entryBlocks,signalAt,placeSignal,link,addLine,planRail,layPlanned,bendAllowed,edgeEnds,curveAt,curveLength,head,behind,trackRibbon,get camera(){return camera},get viewTarget(){return viewTarget},get heldKeys(){return heldKeys},tickCamera,recordTrail,resetTrail,recomputeBlocks,occupiedBy,createTrain,tickTrains,buildStatic,render3D,demo,addIndustry,depositNear,industryCanPlace,emptyWorld,addStation,setMode,clickWorld,turnPoint};
 try{initGL();resize();addEventListener('resize',resize);if(load())announce('Saved railway loaded — welcome back.');else demo();requestAnimationFrame(loop)}catch(e){console.error(e);$('#failure').style.display='block';$('#failure').innerHTML='<h2>Could not start the 3D simulation</h2><p>'+String(e.message).replaceAll('<','&lt;')+'</p>'}
 })();
