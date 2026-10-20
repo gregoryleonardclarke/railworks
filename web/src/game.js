@@ -11,6 +11,10 @@ const C={ground:'#5c795c',grass:'#547856',sleep:'#684b39',bed:'#7c7464',rail:'#e
 const rgb=hex=>{let s=hex[0]==='#'?hex.slice(1):hex;return [parseInt(s.slice(0,2),16)/255,parseInt(s.slice(2,4),16)/255,parseInt(s.slice(4,6),16)/255]};
 let graph=new Map(),stations=[],trains=[],signals=[],points=new Map(),nextTrain=1,nextStation=1,nextSignal=1,selectedTrainId=null,mode='rail',anchor=null,hover=null,showGrid=true,showBlocks=false,signalReverse=false,paused=false,dirty=true,noticeExpiry=0,anchorFrom=null,previewNodes=null,previewKey='',lastBuild=[],blockByEdge=new Map(),blocks=[],bank=1200,delivered=0,industryClock=0;
 const camera={x:14.6*CELL,z:10.5*CELL,zoom:.94,yaw:-.77,elev:.94};
+// Target orientation interpolates toward the drag/keyboard controls. Camera movement
+// remains screen-space consistent at every yaw and tilt.
+const viewTarget={yaw:camera.yaw,elev:camera.elev};
+const heldKeys=new Set();
 let viewport={w:innerWidth,h:innerHeight},mouse={x:0,y:0,down:false,dragging:false,button:0,lastX:0,lastY:0,downX:0,downY:0},timePrev=0,uiTick=0,minimapTick=0;
 function keyValid(k){let [x,z]=parseKey(k);return Number.isInteger(x)&&Number.isInteger(z)&&x>=0&&z>=0&&x<WORLD_X&&z<WORLD_Z}
 function neighbors(a){return [...(graph.get(a)||[])].filter(n=>graph.get(n)?.has(a))}
@@ -27,7 +31,7 @@ function curveAt(a,node,b,t){let center=world(node),start=port(node,a),end=port(
  let inDir=unit(start,center),outDir=unit(center,end),h=PORT*.78;
  let c1={x:start.x+inDir.x*h,z:start.z+inDir.z*h},c2={x:end.x-outDir.x*h,z:end.z-outDir.z*h};let u=1-t;
  return{x:u*u*u*start.x+3*u*u*t*c1.x+3*u*t*t*c2.x+t*t*t*end.x,z:u*u*u*start.z+3*u*u*t*c1.z+3*u*t*t*c2.z+t*t*t*end.z}}
-function curveLength(a,n,b){let len=0,prev=curveAt(a,n,b,0);for(let i=1;i<=12;i++){let q=curveAt(a,n,b,i/12);len+=dist(prev,q);prev=q}return len}
+function curveLength(a,n,b){let len=0,prev=curveAt(a,n,b,0);for(let i=1;i<=28;i++){let q=curveAt(a,n,b,i/28);len+=dist(prev,q);prev=q}return len}
 const DIRS=[[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
 function planRail(a,b,prev=null){if(!keyValid(a)||!keyValid(b)||a===b)return null;
  // A* over positions AND approach headings, so route transitions are genuinely rail-compatible.
@@ -219,26 +223,56 @@ cone(x,y,z,r,h,col,segments=9){let c=rgb(col);for(let i=0;i<segments;i++){let a=
 flat(x,z,w,l,col,y=.012){this.quad([x-w/2,y,z-l/2],[x-w/2,y,z+l/2],[x+w/2,y,z+l/2],[x+w/2,y,z-l/2],[0,1,0],col)}
 }
 function oriented(m,x,y,z,w,h,l,angle,col){m.box(x,y,z,w,h,l,angle,col)}
-function sweptRail(m,pts,bed=true){if(pts.length<2)return;let accumulated=0;
+// An extruded, continuous ribbon across the ENTIRE rail section instead of
+// lots of overlapping rectangular boxes. Joins share their vertex positions,
+// which prevents square joints, exposed ends and visible cracks on bends.
+function trackRibbon(m,pts,offset,width,bottom,top,col,sideCol=col){
+ if(pts.length<2)return;
+ let edges=[];
+ for(let i=0;i<pts.length;i++){
+  let prev=pts[Math.max(0,i-1)],next=pts[Math.min(pts.length-1,i+1)],delta=unit(prev,next);
+  let sx=delta.z,sz=-delta.x;
+  // Shared frame at each sampling point produces smoothly rounded corners.
+  let mid={x:pts[i].x+sx*offset,z:pts[i].z+sz*offset};
+  edges.push({l:[mid.x-sx*width/2,top,mid.z-sz*width/2],r:[mid.x+sx*width/2,top,mid.z+sz*width/2],lb:[mid.x-sx*width/2,bottom,mid.z-sz*width/2],rb:[mid.x+sx*width/2,bottom,mid.z+sz*width/2],n:[sx,0,sz]});
+ }
+ for(let i=1;i<edges.length;i++){
+  let a=edges[i-1],b=edges[i];
+  m.quad(a.l,b.l,b.r,a.r,[0,1,0],col);
+  m.quad(a.lb,a.l,b.l,b.lb,[-a.n[0],0,-a.n[2]],sideCol);
+  m.quad(a.r,a.rb,b.rb,b.r,a.n,sideCol);
+ }
+}
+function sweptRail(m,pts,bed=true){
+ if(pts.length<2)return;
+ if(bed)trackRibbon(m,pts,0,1.60,.02,.14,'#807d70','#615f54');
+ // Sleepers are placed at even *travelled distances*, not one per short
+ // subdivision; this keeps turnout sleepers looking consistent.
+ let distance=0,nextTie=.20,spacing=.56;
  for(let i=1;i<pts.length;i++){
-  let a=pts[i-1],b=pts[i],d=dist(a,b);if(d<.015)continue;
-  let x=(a.x+b.x)/2,z=(a.z+b.z)/2,ang=Math.atan2(b.x-a.x,b.z-a.z),sideX=Math.cos(ang),sideZ=-Math.sin(ang);
-  if(bed)m.box(x,.075,z,1.48,.12,d+.08,ang,'#7b7669');
-  for(let sign of [-1,1]){let ox=sideX*sign*.425,oz=sideZ*sign*.425;
-   m.box(x+ox,.265,z+oz,.105,.19,d+.04,ang,'#4c5754');m.box(x+ox,.368,z+oz,.097,.045,d+.04,ang,'#d9d5c2')}
-  // Track ties across the whole section. On curves, ties rotate to follow tangent.
-  let count=Math.max(1,Math.round(d/.49));for(let q=0;q<count;q++){
-   let t=(q+.5)/count,p={x:mix(a.x,b.x,t),z:mix(a.z,b.z,t)};
-   m.box(p.x,.190,p.z,1.64,.115,.19,ang,'#6c513d')}
-  accumulated+=d;
- }}
-function segmentMesh(m,a,b){let [p,q]=edgeEnds(a,b),d=dist(p,q),count=Math.max(1,Math.ceil(d/.53));let pts=[];
+  const a=pts[i-1],b=pts[i],length=dist(a,b);
+  if(length<1e-5)continue;
+  while(nextTie<=distance+length+1e-6){
+   let t=clamp((nextTie-distance)/length,0,1),x=mix(a.x,b.x,t),z=mix(a.z,b.z,t),ang=Math.atan2(b.x-a.x,b.z-a.z);
+   m.box(x,.203,z,1.77,.125,.21,ang,'#70543d');
+   nextTie+=spacing;
+  }
+  distance+=length;
+ }
+ // Steel rails: a dark foot, narrow web and a silver running surface.
+ for(const side of [-1,1]){
+  trackRibbon(m,pts,side*.445,.165,.265,.314,'#485050','#383f3f');
+  trackRibbon(m,pts,side*.445,.085,.308,.414,'#596462','#444d4c');
+  trackRibbon(m,pts,side*.445,.145,.402,.462,'#e8e3cc','#a8aea6');
+ }
+}
+function segmentMesh(m,a,b){let [p,q]=edgeEnds(a,b),d=dist(p,q),count=Math.max(1,Math.ceil(d/.34));let pts=[];
  for(let i=0;i<=count;i++)pts.push({x:mix(p.x,q.x,i/count),z:mix(p.z,q.z,i/count)});sweptRail(m,pts)}
 function junctionMesh(m,n){let nn=neighbors(n),p=world(n),distinct=new Set();
  if(nn.length<2)return;
  for(let i=0;i<nn.length;i++)for(let j=i+1;j<nn.length;j++){
   if(!bendAllowed(nn[i],n,nn[j]))continue;
-  let pts=[];let length=curveLength(nn[i],n,nn[j]);let count=Math.max(4,Math.ceil(length/.37));
+  let pts=[];let length=curveLength(nn[i],n,nn[j]);let count=Math.max(4,Math.ceil(length/.18));
   for(let k=0;k<=count;k++)pts.push(curveAt(nn[i],n,nn[j],k/count));sweptRail(m,pts);
  }
  if(nn.length>=3){m.box(p.x+1.10,.20,p.z+.98,.68,.26,.62,0,'#806c47');m.box(p.x+1.10,.40,p.z+.98,.30,.14,.23,0,'#e8b95b');let chosen=pointExit(n);if(chosen){let out=port(n,chosen),dir=unit(p,out),theta=Math.atan2(dir.x,dir.z);m.box(p.x+dir.x*.42,.385,p.z+dir.z*.42,.14,.075,.64,theta,'#f1c577')}}
@@ -325,12 +359,56 @@ else if(mode==='train'){if(!graph.has(node)){announce('Place locomotives on conn
 else if(mode==='select'){let t=nearestTrain(p);if(t){selectedTrainId=t.id;updateUI();announce(`${t.name} selected — use the control panel to manage it.`)}else{let st=stations.find(s=>dist(p,world(s.node))<1.5);if(st)announce(`${st.name} — send trains here from the train controls.`)}}
 else if(mode==='delete'){let sig=signals.find(s=>{let a=world(s.a),b=world(s.b),pos={x:mix(a.x,b.x,.27),z:mix(a.z,b.z,.27)};return dist(p,pos)<.65});if(sig){signals=signals.filter(s=>s!==sig);recomputeBlocks();dirty=true;announce('Signal demolished.');return}let s=stations.find(s=>dist(p,world(s.node))<1.35);if(s){stations=stations.filter(t=>t!==s);trains.forEach(t=>{t.schedule=t.schedule.filter(id=>id!==s.id);if(t.target===s.id){t.target=t.schedule[0]||null}if(t.nextTarget===s.id)t.nextTarget=null});dirty=true;updateUI();announce('Station removed.');return}let e=closestEdge(p);if(e&&e.d<1.08){removeEdge(e.a,e.b);announce('Track removed. Trains will stop if their route is interrupted.')}else announce('Click closer to the track to demolish it.')}
 }
-canvas.addEventListener('contextmenu',e=>e.preventDefault());canvas.addEventListener('pointerdown',e=>{mouse.down=true;mouse.dragging=false;mouse.button=e.button;mouse.lastX=e.clientX;mouse.lastY=e.clientY;mouse.downX=e.clientX;mouse.downY=e.clientY;canvas.setPointerCapture(e.pointerId)});
-canvas.addEventListener('pointermove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;hover=snap(unproject(e.clientX,e.clientY));if(mouse.down){let dx=e.clientX-mouse.lastX,dy=e.clientY-mouse.lastY;if(Math.hypot(e.clientX-mouse.downX,e.clientY-mouse.downY)>4)mouse.dragging=true;if(mouse.button===2||mouse.button===1){let s=scale(),co=Math.cos(camera.yaw),si=Math.sin(camera.yaw),radial=dy/(s*Math.sin(camera.elev)),side=dx/s;camera.x-=side*co+radial*si;camera.z-=-side*si+radial*co}}mouse.lastX=e.clientX;mouse.lastY=e.clientY});
+function panFromPointer(dx,dy){
+ let a=unproject(viewport.w/2,viewport.h/2),b=unproject(viewport.w/2+dx,viewport.h/2+dy);
+ camera.x+=a.x-b.x;camera.z+=a.z-b.z;
+}
+function tickCamera(dt){
+ const dtc=Math.min(dt,.06);
+ if(heldKeys.has('q'))viewTarget.yaw-=dtc*1.75;
+ if(heldKeys.has('e'))viewTarget.yaw+=dtc*1.75;
+ // Screen-oriented pan, so WASD never feels backward after rotating the view.
+ const right=(heldKeys.has('d')||heldKeys.has('arrowright')?1:0)-(heldKeys.has('a')||heldKeys.has('arrowleft')?1:0);
+ const down=(heldKeys.has('arrowdown')?1:0)-(heldKeys.has('w')||heldKeys.has('arrowup')?1:0);
+ if(right||down){const panSpeed=23/camera.zoom,co=Math.cos(camera.yaw),si=Math.sin(camera.yaw),step=dtc*panSpeed;
+  camera.x+=(right*co+down*si)*step;camera.z+=(-right*si+down*co)*step;}
+ const factor=1-Math.exp(-dtc*13);
+ // shortest angular interpolation, also handles crossing the +/-pi boundary.
+ const delta=Math.atan2(Math.sin(viewTarget.yaw-camera.yaw),Math.cos(viewTarget.yaw-camera.yaw));
+ camera.yaw+=delta*factor;camera.elev+=(viewTarget.elev-camera.elev)*factor;
+}
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+canvas.addEventListener('pointerdown',e=>{
+ mouse.down=true;mouse.dragging=false;mouse.button=e.button;mouse.pan=e.button===1||(e.button===2&&e.shiftKey);
+ mouse.lastX=e.clientX;mouse.lastY=e.clientY;mouse.downX=e.clientX;mouse.downY=e.clientY;
+ canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove',e=>{
+ mouse.x=e.clientX;mouse.y=e.clientY;
+ if(mouse.down){let dx=e.clientX-mouse.lastX,dy=e.clientY-mouse.lastY;
+  if(Math.hypot(e.clientX-mouse.downX,e.clientY-mouse.downY)>3)mouse.dragging=true;
+  if(mouse.button===2&&!mouse.pan){viewTarget.yaw-=dx*.009;viewTarget.elev=clamp(viewTarget.elev-dy*.006,.40,1.47)}
+  else if(mouse.pan)panFromPointer(dx,dy);
+ }
+ hover=snap(unproject(e.clientX,e.clientY));
+ mouse.lastX=e.clientX;mouse.lastY=e.clientY;
+});
 canvas.addEventListener('pointerup',e=>{if(mouse.down&&mouse.button===0&&!mouse.dragging)clickWorld(e.clientX,e.clientY);mouse.down=false;mouse.dragging=false});
+canvas.addEventListener('pointercancel',()=>{mouse.down=false;mouse.dragging=false});
+window.addEventListener('blur',()=>heldKeys.clear());
 canvas.addEventListener('wheel',e=>{e.preventDefault();let old=unproject(e.clientX,e.clientY);camera.zoom=clamp(camera.zoom*Math.exp(-e.deltaY*.0011),.48,3.4);let now=unproject(e.clientX,e.clientY);camera.x+=old.x-now.x;camera.z+=old.z-now.z},{passive:false});
-window.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(e.target?.tagName))return;let k=e.key.toLowerCase();if(k==='r')setMode('rail');else if(k==='v')setMode('select');else if(k==='s')setMode('station');else if(k==='t')setMode('train');else if(k==='x')setMode('delete');else if(k==='j')setMode('junction');else if(k==='b')setMode('block');else if(k==='c')setMode('chain');else if(k==='f'){signalReverse=!signalReverse;announce('Signal orientation '+(signalReverse?'reversed':'normal'));}else if(k==='h'){showBlocks=!showBlocks;announce('Block boundary overlay '+(showBlocks?'enabled':'disabled'))}else if(k==='q')camera.yaw-=Math.PI/8;else if(k==='e')camera.yaw+=Math.PI/8;else if((e.altKey&&k==='z')||(e.ctrlKey&&k==='z')){e.preventDefault();if(lastBuild.length){for(let [a,b] of lastBuild)removeEdge(a,b);lastBuild=[];announce('Last track construction undone.')}else announce('Nothing to undo.')}else if(k==='g'){showGrid=!showGrid;dirty=true}else if(k==='escape'){anchor=null;anchorFrom=null;previewNodes=null;$('#help').classList.remove('show');announce('Action cancelled.')}else if(e.code==='Space'){paused=!paused;announce(paused?'Simulation paused':'Simulation resumed');e.preventDefault()}else if(['arrowup','w'].includes(k)){camera.z-=2.0;e.preventDefault()}else if(['arrowdown'].includes(k)){camera.z+=2.0;e.preventDefault()}else if(k==='arrowleft'||k==='a'){camera.x-=2.0;e.preventDefault()}else if(k==='arrowright'||k==='d'){camera.x+=2.0;e.preventDefault()}});
-$all('.tool').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));$('#btnResetView').onclick=()=>{camera.x=14.6*CELL;camera.z=10.5*CELL;camera.zoom=.94;camera.yaw=-.77;announce('Camera recentred on the railway network.')};$('#btnHelp').onclick=()=>$('#help').classList.add('show');$('#btnCloseHelp').onclick=()=>$('#help').classList.remove('show');
+window.addEventListener('keyup',e=>heldKeys.delete(e.key.toLowerCase()));
+window.addEventListener('keydown',e=>{
+ if(['INPUT','TEXTAREA','SELECT'].includes(e.target?.tagName))return;
+ let k=e.key.toLowerCase();
+ if(['q','e','w','a','d','arrowup','arrowdown','arrowleft','arrowright'].includes(k)){heldKeys.add(k);if(k.startsWith('arrow')||['q','e'].includes(k))e.preventDefault();}
+ // Keep S as the station shortcut on the initial press, but holding S pans.
+ if(e.repeat)return;
+ if(k==='r')setMode('rail');else if(k==='v')setMode('select');else if(k==='s')setMode('station');else if(k==='t')setMode('train');else if(k==='x')setMode('delete');else if(k==='j')setMode('junction');else if(k==='b')setMode('block');else if(k==='c')setMode('chain');else if(k==='f'){signalReverse=!signalReverse;announce('Signal orientation '+(signalReverse?'reversed':'normal'));}else if(k==='h'){showBlocks=!showBlocks;announce('Block boundary overlay '+(showBlocks?'enabled':'disabled'))}else if((e.altKey&&k==='z')||(e.ctrlKey&&k==='z')){e.preventDefault();if(lastBuild.length){for(let [a,b] of lastBuild)removeEdge(a,b);lastBuild=[];announce('Last track construction undone.')}else announce('Nothing to undo.')}else if(k==='g'){showGrid=!showGrid;dirty=true}else if(k==='escape'){anchor=null;anchorFrom=null;previewNodes=null;$('#help').classList.remove('show');announce('Action cancelled.')}else if(e.code==='Space'){paused=!paused;announce(paused?'Simulation paused':'Simulation resumed');e.preventDefault()}
+});
+$all('.tool').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));$('#btnRotateLeft').onclick=()=>viewTarget.yaw-=Math.PI/8;
+$('#btnRotateRight').onclick=()=>viewTarget.yaw+=Math.PI/8;
+$('#btnResetView').onclick=()=>{camera.x=14.6*CELL;camera.z=10.5*CELL;camera.zoom=.94;viewTarget.yaw=-.77;viewTarget.elev=.94;announce('Camera recentered and orientation reset.')};$('#btnHelp').onclick=()=>$('#help').classList.add('show');$('#btnCloseHelp').onclick=()=>$('#help').classList.remove('show');
 function snapshot(){let state={version:3,edges:[],stations,trains,signals,points:[...points.entries()],nextTrain,nextStation,nextSignal,bank,delivered};for(let [a,links] of graph)for(let b of links)if(a<b)state.edges.push([a,b]);return state}
 function save(){try{localStorage.setItem(STORAGE,JSON.stringify(snapshot()));announce('Railway saved in this browser.')}catch(e){announce('Browser storage unavailable — use Export instead.')}}
 function loadState(s){if(!s||!Array.isArray(s.edges)||!Array.isArray(s.trains)||!Array.isArray(s.stations))return false;
@@ -341,8 +419,7 @@ function load(){try{return loadState(JSON.parse(localStorage.getItem(STORAGE)||l
 function exportSave(){let blob=new Blob([JSON.stringify(snapshot(),null,2)],{type:'application/json'});let u=URL.createObjectURL(blob);let a=document.createElement('a');a.href=u;a.download='railworks-railway-save.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),250);announce('Railway exported as JSON. Keep a copy before updating itch.io.')}
 $('#btnExport').onclick=exportSave;$('#btnImport').onclick=()=>$('#importSave').click();$('#importSave').onchange=async e=>{let file=e.target.files?.[0];if(!file)return;try{let candidate=JSON.parse(await file.text());if(!candidate||!Array.isArray(candidate.edges)||!Array.isArray(candidate.stations)||!Array.isArray(candidate.trains))throw Error('Invalid railway file');if(!confirm('Replace your current railway with this imported save?'))return;if(!loadState(candidate))throw Error('Invalid railway data');save();announce('Railway imported successfully.')}catch(err){announce('Cannot import this file: '+err.message)}finally{e.target.value=''}};
 $('#btnSave').onclick=save;$('#btnReset').onclick=()=>{if(confirm('Reset the whole railway to the original starter map? This will also remove your saved network.')){try{localStorage.removeItem(STORAGE);localStorage.removeItem(OLD_STORAGE);localStorage.removeItem(FIRST_STORAGE)}catch(e){}demo()}};
-function loop(now){let dt=Math.min(.08,Math.max(0,(now-timePrev)/1000||.016));timePrev=now;if(!paused)tickTrains(dt);render3D();overlayDraw();labels();if(now-minimapTick>180){drawMini();minimapTick=now}if(now-uiTick>110){updateTrainUI();uiTick=now}if(noticeExpiry&&now>noticeExpiry){$('#notice').style.opacity='0';noticeExpiry=0}requestAnimationFrame(loop)}
-window.__RAILWORKS_TEST={get graph(){return graph},get trains(){return trains},get stations(){return stations},get signals(){return signals},get blocks(){return blocks},get bank(){return bank},get delivered(){return delivered},get blockByEdge(){return blockByEdge},project,world,K,shortest,entryBlocks,signalAt,placeSignal,link,addLine,planRail,layPlanned,bendAllowed,edgeEnds,curveAt,curveLength,head,behind,recordTrail,resetTrail,recomputeBlocks,occupiedBy,createTrain,tickTrains,demo,addStation,setMode,clickWorld,turnPoint};
+function loop(now){let dt=Math.min(.08,Math.max(0,(now-timePrev)/1000||.016));timePrev=now;tickCamera(dt);if(!paused)tickTrains(dt);render3D();overlayDraw();labels();if(now-minimapTick>180){drawMini();minimapTick=now}if(now-uiTick>110){updateTrainUI();uiTick=now}if(noticeExpiry&&now>noticeExpiry){$('#notice').style.opacity='0';noticeExpiry=0}requestAnimationFrame(loop)}
+window.__RAILWORKS_TEST={get graph(){return graph},get trains(){return trains},get stations(){return stations},get signals(){return signals},get blocks(){return blocks},get bank(){return bank},get delivered(){return delivered},get blockByEdge(){return blockByEdge},project,world,K,shortest,entryBlocks,signalAt,placeSignal,link,addLine,planRail,layPlanned,bendAllowed,edgeEnds,curveAt,curveLength,head,behind,trackRibbon,get camera(){return camera},get viewTarget(){return viewTarget},get heldKeys(){return heldKeys},tickCamera,recordTrail,resetTrail,recomputeBlocks,occupiedBy,createTrain,tickTrains,demo,addStation,setMode,clickWorld,turnPoint};
 try{initGL();resize();addEventListener('resize',resize);if(load())announce('Saved railway loaded — welcome back.');else demo();requestAnimationFrame(loop)}catch(e){console.error(e);$('#failure').style.display='block';$('#failure').innerHTML='<h2>Could not start the 3D simulation</h2><p>'+String(e.message).replaceAll('<','&lt;')+'</p>'}
 })();
-

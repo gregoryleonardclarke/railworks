@@ -1,4 +1,4 @@
-# RAILWORKS — Alpha 0.3
+# RAILWORKS — Alpha 0.4
 
 An original browser-based 3D isometric railway logistics and management prototype, inspired by railway gameplay in Factorio. The focus is railway building, trains, signals and a streamlined production economy.
 
@@ -29,4 +29,4 @@ Before changing builds, use the in-game Export Save option. This helps protect a
 
 ## Current limitations
 
-The Alpha 0.3 track system has smoothed eight-direction curves and turnouts but does not yet reproduce every Factorio 2.0 rail component or signalling/interlocking rule. Head-on single-track deadlocks remain possible. The game uses native WebGL and has no external network runtime dependencies.
+The Alpha 0.4 track system has smoothed eight-direction curves and turnouts but does not yet reproduce every Factorio 2.0 rail component or signalling/interlocking rule. Head-on single-track deadlocks remain possible. The game uses native WebGL and has no external network runtime dependencies.
